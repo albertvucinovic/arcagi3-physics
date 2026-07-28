@@ -17,12 +17,11 @@ Physics
 `arcagi3_physics.arc_physics(...)` composes:
 
 - durable reset/replay/one-action environment Tasks;
-- one Modeler `ActorCritic` that edits a normal `world_model.py` with tools,
-  keeps several hypotheses inside that program, and repairs it from
-  complete-Timeline counterexamples;
-- one Planner `ActorCritic` that emits a model-backed plan or a discriminating
-  experiment with frozen pre-action predictions;
-- compile/backtest, deterministic BFS, and predictive-disagreement search.
+- one Modeler `ActorCritic` that edits a normal `world_model.py` as one
+  provisional hypothesis and repairs it from complete-Timeline counterexamples;
+- one Planner `ActorCritic` that emits a model-backed plan or one cheap
+  falsifying/discovery action with frozen pre-action predictions;
+- compile/backtest and deterministic BFS over the one accepted model.
 
 The Modeler's chat response is only a completion signal. The accepted Task
 result is an immutable snapshot of `world_model.py`; the mutable workspace file

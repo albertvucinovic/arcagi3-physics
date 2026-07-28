@@ -15,7 +15,6 @@ def arc_physics(
     environments_dir: str | Path,
     modeler: Agent,
     planner: Agent,
-    branches: int = 3,
 ) -> PhysicsStrategy:
     """Compose the generic PhysicsStrategy into an ARC-AGI-3 solver."""
 
@@ -34,7 +33,7 @@ def arc_physics(
         )
 
     def hypothesize(*, timeline, hypotheses, evidence, workspace, **_):
-        return Hypothesize(modeler, timeline, hypotheses, evidence, workspace, branches)
+        return Hypothesize(modeler, timeline, hypotheses, evidence, workspace)
 
     def test(*, hypotheses, timeline, commitment, workspace, **_):
         return Test(hypotheses, timeline, commitment, workspace)
@@ -61,6 +60,5 @@ def arc_physics(
             "version": 1,
             "game": game,
             "seed": seed,
-            "branches": branches,
         },
     )

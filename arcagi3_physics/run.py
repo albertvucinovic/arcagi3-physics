@@ -49,7 +49,6 @@ def run(arguments: argparse.Namespace) -> Path:
         environments_dir=arguments.environments_dir,
         modeler=modeler,
         planner=planner,
-        branches=arguments.branches,
     )
 
     print(
@@ -90,7 +89,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--planner-model", default="Pro: GPT-5.6 Sol max")
     parser.add_argument("--models", type=Path)
     parser.add_argument("--all-models", type=Path)
-    parser.add_argument("--branches", type=_positive, default=3)
     parser.add_argument("--max-actions", type=_positive, default=50)
     parser.add_argument("--max-cycles", type=_positive, default=100)
     parser.add_argument(

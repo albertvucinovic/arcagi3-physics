@@ -39,7 +39,6 @@ args=(
   --run-dir "${ARC_RUN_DIR:-$ROOT/runs/physics-ls20-seed0}"
   --modeler-model "${ARC_MODELER_MODEL:-Pro: GPT-5.6 Sol max}"
   --planner-model "${ARC_PLANNER_MODEL:-Pro: GPT-5.6 Sol max}"
-  --branches "${ARC_BRANCHES:-3}"
   --max-actions "${ARC_MAX_ACTIONS:-50}"
   --max-cycles "${ARC_MAX_CYCLES:-100}"
   --modeler-context-limit "${ARC_MODELER_CONTEXT_LIMIT:-0}"

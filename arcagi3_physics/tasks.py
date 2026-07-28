@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,7 +10,7 @@ from eggflow import Task
 from eggopt import ActorCritic, Agent
 from eggopt.identity import digest_payload
 
-from .world import choose_experiment, run_backtest, run_bfs, snapshot_world_model
+from .world import ensure_world_model, run_backtest, run_bfs, snapshot_world_model
 
 
 @dataclass
@@ -21,7 +22,6 @@ class Hypothesize(Task):
     previous: Any
     evidence: Any
     workspace: str
-    branches: int = 3
     max_rounds: int = 4
 
     def get_cache_key(self):
@@ -32,11 +32,11 @@ class Hypothesize(Task):
                 "timeline": self.timeline,
                 "previous": self.previous,
                 "evidence": self.evidence,
-                "branches": self.branches,
             },
         )
 
     def run(self):
+        ensure_world_model(Path(self.workspace) / "innerContext")
         result = yield ActorCritic(
             actor=self.agent,
             critic=Backtest(self.timeline, self.workspace),
@@ -55,22 +55,22 @@ class Hypothesize(Task):
             "timeline": self.timeline,
             "previous_world_model_available": self.previous is not None,
             "new_evidence": self.evidence,
-            "desired_hypotheses": self.branches,
         }
         return (
-            "Act as a physicist studying a hidden world. Use bash or python tools to "
-            "create or revise ./world_model.py in your workspace. The file—not your chat "
-            "response—is the result. Keep several deliberately distinct hypotheses in "
-            "HYPOTHESES when evidence permits. The program must define:\n"
-            "  HYPOTHESES: a non-empty tuple/list of JSON-safe hypothesis identities\n"
-            "  ground(history, hypothesis)\n"
-            "  step(state, action, hypothesis)\n"
-            "  render(state, hypothesis)\n"
-            "  is_goal(state, hypothesis)\n"
-            "Grounding, mechanism, rendering, and goal may all be revised. Do not access "
-            "the real environment or hidden game implementation. You may inspect and edit "
-            "only files in your workspace. When world_model.py is saved, answer briefly.\n\n"
-            + json.dumps(body, sort_keys=True)
+            "Act as a physicist studying one hidden world. ./world_model.py is one "
+            "provisional hypothesis, not a hypothesis collection. The file has already "
+            "been created with complete documentation and required function stubs. Read "
+            "it first, then use bash or python tools to implement or revise it. The file—"
+            "not your chat response—is the result. Preserve exactly this public API:\n"
+            "  ground(history) -> current latent state\n"
+            "  step(state, action) -> predicted next latent state\n"
+            "  render(state) -> complete predicted public observation\n"
+            "  is_goal(state) -> bool\n"
+            "Grounding, mechanism, rendering, and goal may all be revised. Do not add a "
+            "HYPOTHESES collection or hypothesis arguments. Probabilistic uncertainty, "
+            "if needed, belongs inside this one model's state. Do not access the real "
+            "environment or hidden game implementation. When world_model.py is saved, "
+            "answer briefly.\n\n" + json.dumps(body, sort_keys=True)
         )
 
 
@@ -203,13 +203,17 @@ class Deliberate(Task):
         legal = _observation(self.timeline).get("legal_actions", ())
         body = {
             "legal_actions": legal,
-            "world_model": self.world_model,
+            "world_model_snapshot_sha256": hashlib.sha256(
+                self.world_model.encode()
+            ).hexdigest(),
+            "world_model_source": self.world_model,
             "evidence": self.evidence,
         }
         return (
-            "Choose a model-backed goal plan when credible. Otherwise choose the cheapest "
-            "action whose predicted observation distinguishes hypotheses. Every intent "
-            "must freeze its prediction before execution.\n\n"
+            "Choose a goal-reaching plan supported by world_model.py when credible. If "
+            "there is no credible plan, choose one cheap legal discovery action whose "
+            "outcome would most improve or falsify the current model. Every intent must "
+            "freeze the model's predicted public observation before execution.\n\n"
             + json.dumps(body, sort_keys=True)
             + '\n\nReturn only strict JSON: {"intents":[...]}, or {"intents":null}.'
         )
@@ -247,10 +251,7 @@ def deterministic_commitment(world_model, timeline, workspace, *, max_depth=12):
         Path(workspace) / "planning",
         max_depth=max_depth,
     )
-    if plan:
-        return plan
-    experiment = choose_experiment(world_model, timeline, legal, workspace)
-    return (experiment,) if experiment is not None else None
+    return plan
 
 
 def _commitment(answer: Any):

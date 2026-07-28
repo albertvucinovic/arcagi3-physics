@@ -11,34 +11,29 @@ from arcagi3_physics.run import build_parser
 from arcagi3_physics.solver import arc_physics
 from arcagi3_physics.tasks import Backtest, Hypothesize, deterministic_commitment
 from arcagi3_physics.world import (
-    choose_experiment,
+    WORLD_MODEL_TEMPLATE,
+    ensure_world_model,
     run_backtest,
     run_bfs,
     snapshot_world_model,
 )
 
 WORLD_MODEL = """
-HYPOTHESES = ("right", "double")
-
-def ground(history, hypothesis):
+def ground(history):
     latest = history[-1]
     observation = latest.get("observation", latest)
     return observation["position"]
 
-def step(state, action, hypothesis):
-    value = action["action"] if isinstance(action, dict) else action
-    return state + value * (2 if hypothesis == "double" else 1)
+def step(state, action):
+    value = action['action'] if isinstance(action, dict) else action
+    return state + value
 
-def render(state, hypothesis):
+def render(state):
     return {"position": state, "legal_actions": (1, 2)}
 
-def is_goal(state, hypothesis):
-    return state >= (4 if hypothesis == "double" else 2)
+def is_goal(state):
+    return state >= 2
 """
-
-CONSISTENT_MODEL = WORLD_MODEL.replace(
-    'HYPOTHESES = ("right", "double")', 'HYPOTHESES = ("right",)'
-)
 
 
 class ScriptedLLM:
@@ -64,7 +59,7 @@ class ScriptedLLM:
         }
 
 
-def test_world_model_file_backtest_plan_and_discriminating_experiment(tmp_path):
+def test_world_model_file_backtest_and_plan(tmp_path):
     model_path = tmp_path / "world_model.py"
     model_path.write_text(WORLD_MODEL)
     source = snapshot_world_model(tmp_path)
@@ -80,32 +75,39 @@ def test_world_model_file_backtest_plan_and_discriminating_experiment(tmp_path):
     )
 
     report = run_backtest(source, timeline, tmp_path / "backtest")
-    assert report["branches"][0] == {
-        "hypothesis": "right",
-        "matches": 1,
-        "counterexamples": [],
-    }
-    assert report["branches"][1]["counterexamples"][0]["transition"] == 1
+    assert report == {"matches": 1, "counterexamples": []}
 
     plan = run_bfs(source, timeline, (1, 2), tmp_path / "bfs")
     assert plan == (
         {
             "action": 1,
-            "hypothesis": "right",
             "prediction": {"position": 2, "legal_actions": (1, 2)},
         },
     )
 
-    experiment = choose_experiment(source, timeline, (1, 2), tmp_path / "experiment")
-    assert experiment["action"] == 1
-    assert len({_freeze(value) for value in experiment["predictions"]}) == 2
-
 
 def test_deterministic_commitment_prefers_goal_plan(tmp_path):
     timeline = ({"position": 0, "legal_actions": (1, 2)},)
-    assert (
-        deterministic_commitment(CONSISTENT_MODEL, timeline, tmp_path)[0]["action"] == 2
-    )
+    assert deterministic_commitment(WORLD_MODEL, timeline, tmp_path)[0]["action"] == 2
+
+
+def test_world_model_skeleton_documents_exact_single_model_api(tmp_path):
+    path = ensure_world_model(tmp_path)
+    source = path.read_text()
+
+    assert source == WORLD_MODEL_TEMPLATE
+    assert "def ground(history):" in source
+    assert "def step(state, action):" in source
+    assert "def render(state):" in source
+    assert "def is_goal(state):" in source
+    assert "Public observation shape" in source
+    assert '"grid"' in source
+    assert '"legal_actions"' in source
+    assert '"state"' in source
+    assert '"levels_completed"' in source
+    assert '"win_levels"' in source
+    assert "action['action']" in source
+    assert "HYPOTHESES" not in source
 
 
 def test_backtest_missing_file_returns_actor_revision(tmp_path):
@@ -127,7 +129,7 @@ def test_hypothesize_returns_world_model_file_snapshot(tmp_path, monkeypatch):
         def run(self):
             inner = Path(self.workspace, "innerContext")
             inner.mkdir(parents=True, exist_ok=True)
-            Path(inner, "world_model.py").write_text(CONSISTENT_MODEL)
+            Path(inner, "world_model.py").write_text(WORLD_MODEL)
             result = yield ActorCritic(
                 actor=self.agent,
                 critic=Backtest(self.timeline, str(inner)),
@@ -153,7 +155,6 @@ def test_hypothesize_returns_world_model_file_snapshot(tmp_path, monkeypatch):
                 hypotheses,
                 evidence,
                 workspace,
-                branches=1,
             )
         ),
         test=lambda **_: Value(None),
@@ -162,7 +163,7 @@ def test_hypothesize_returns_world_model_file_snapshot(tmp_path, monkeypatch):
         identity={"test": "world-model-file"},
     ).run(run_dir=tmp_path / "run", max_cycles=1)
 
-    assert result.hypotheses == CONSISTENT_MODEL
+    assert result.hypotheses == WORLD_MODEL
     assert modeler.calls == 1
 
 

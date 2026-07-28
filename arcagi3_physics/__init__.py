@@ -4,7 +4,8 @@ from .environment import Execute, Observe, observation
 from .solver import arc_physics
 from .tasks import Backtest, Deliberate, Hypothesize, Test, deterministic_commitment
 from .world import (
-    choose_experiment,
+    WORLD_MODEL_TEMPLATE,
+    ensure_world_model,
     load_model,
     run_backtest,
     run_bfs,
@@ -12,6 +13,7 @@ from .world import (
 )
 
 __all__ = [
+    "WORLD_MODEL_TEMPLATE",
     "Backtest",
     "Deliberate",
     "Execute",
@@ -19,8 +21,8 @@ __all__ = [
     "Observe",
     "Test",
     "arc_physics",
-    "choose_experiment",
     "deterministic_commitment",
+    "ensure_world_model",
     "load_model",
     "observation",
     "run_backtest",
