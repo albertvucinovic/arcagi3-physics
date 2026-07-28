@@ -1,0 +1,153 @@
+from __future__ import annotations
+
+import argparse
+import json
+from dataclasses import asdict
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+
+from eggopt import Agent
+from eggthreads import create_llm_client
+
+from .solver import arc_physics
+
+MODEL_WRITER_SYSTEM_PROMPT = """You are the Modeler in a scientific discovery loop.
+Use your local bash or Python tools to create and revise world_model.py. The file
+is your result; chat responses only signal that editing is complete. Never inspect
+the real environment implementation or hidden state."""
+
+PLANNER_SYSTEM_PROMPT = """You are the Planner in a scientific discovery loop.
+Reason only from the supplied observations, accepted world model, legal actions,
+and evidence. Return the exact strict-JSON commitment requested by the user."""
+
+
+def run(arguments: argparse.Namespace) -> Path:
+    models, all_models = _model_paths(arguments.models, arguments.all_models)
+    llm = create_llm_client(models_path=models, all_models_path=all_models)
+    modeler = Agent(
+        llm,
+        {"role": "arc-physics-modeler", "version": 1},
+        model_key=arguments.modeler_model,
+        models_path=models,
+        context_limit=_limit(arguments.modeler_context_limit),
+        auto_approve_tools=True,
+        allowed_tools=frozenset({"bash", "python_exec"}),
+        system_prompt=MODEL_WRITER_SYSTEM_PROMPT,
+    )
+    planner = Agent(
+        llm,
+        {"role": "arc-physics-planner", "version": 1},
+        model_key=arguments.planner_model,
+        models_path=models,
+        context_limit=_limit(arguments.planner_context_limit),
+        allowed_tools=frozenset(),
+        system_prompt=PLANNER_SYSTEM_PROMPT,
+    )
+    strategy = arc_physics(
+        game=arguments.game,
+        seed=arguments.seed,
+        environments_dir=arguments.environments_dir,
+        modeler=modeler,
+        planner=planner,
+        branches=arguments.branches,
+    )
+
+    print(
+        f"ARC Physics: game={arguments.game} seed={arguments.seed} "
+        f"modeler={arguments.modeler_model!r} planner={arguments.planner_model!r}"
+    )
+    result = strategy.run(
+        run_dir=arguments.run_dir,
+        max_actions=arguments.max_actions,
+        max_cycles=arguments.max_cycles,
+    )
+    destination = Path(arguments.run_dir) / "result.json"
+    _write_json(destination, asdict(result))
+    print(
+        f"ARC Physics stopped: {result.stopping_reason}; "
+        f"actions={result.actions}; cycles={result.cycles}"
+    )
+    print(f"Result: {destination.resolve()}")
+    print(
+        "World model: "
+        f"{(Path(arguments.run_dir) / 'workspaces/hypotheses/innerContext/world_model.py').resolve()}"
+    )
+    print(f"Physics thread: {result.physics_thread_id}")
+    return destination
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run the Eggopt PhysicsStrategy on one local ARC-AGI-3 game."
+    )
+    parser.add_argument("--game", default="ls20")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--environments-dir", type=Path, default=Path("environment_files")
+    )
+    parser.add_argument("--run-dir", type=Path, default=Path("runs/physics-ls20-seed0"))
+    parser.add_argument("--modeler-model", default="Pro: GPT-5.6 Sol max")
+    parser.add_argument("--planner-model", default="Pro: GPT-5.6 Sol max")
+    parser.add_argument("--models", type=Path)
+    parser.add_argument("--all-models", type=Path)
+    parser.add_argument("--branches", type=_positive, default=3)
+    parser.add_argument("--max-actions", type=_positive, default=50)
+    parser.add_argument("--max-cycles", type=_positive, default=100)
+    parser.add_argument(
+        "--modeler-context-limit",
+        type=_non_negative,
+        default=0,
+        help="Full-history token limit; 0 means unlimited.",
+    )
+    parser.add_argument(
+        "--planner-context-limit",
+        type=_non_negative,
+        default=0,
+        help="Full-history token limit; 0 means unlimited.",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    run(build_parser().parse_args(argv))
+    return 0
+
+
+def _model_paths(models: Path | None, all_models: Path | None) -> tuple[str, str]:
+    if models is None:
+        from eggconfig import get_all_models_path, get_models_path
+
+        return str(get_models_path()), str(get_all_models_path())
+    catalog = all_models or models.with_name("all-models.json")
+    return str(models), str(catalog)
+
+
+def _limit(value: int) -> int | None:
+    return value or None
+
+
+def _positive(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be positive")
+    return parsed
+
+
+def _non_negative(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be non-negative")
+    return parsed
+
+
+def _write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile("w", dir=path.parent, delete=False) as temporary:
+        json.dump(value, temporary, indent=2, sort_keys=True, default=repr)
+        temporary.write("\n")
+        temporary_path = Path(temporary.name)
+    temporary_path.replace(path)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

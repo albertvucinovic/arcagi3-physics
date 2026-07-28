@@ -34,3 +34,36 @@ aborts the unexecuted queue and returns evidence to the same Modeler thread.
 
 The existing `arcagi3_cli.py` remains independent and unchanged by this solver.
 No benchmark or model run is launched automatically.
+
+## Run one offline game
+
+`runPhysics.sh` runs `ls20`, seed `0`, and resumes from the same run directory
+when launched again:
+
+```bash
+./runPhysics.sh
+```
+
+The ARC venv needs Eggllm's async streaming dependency:
+
+```bash
+venv/bin/python -m pip install 'aiohttp>=3.9'
+```
+
+The script checks this before opening or resuming a run.
+
+It uses `Pro: GPT-5.6 Sol max` for Modeler and Planner by default, sources API
+keys from the egg-mono `.env` when present, and never starts a model server.
+Override settings without editing the script:
+
+```bash
+ARC_MODELER_MODEL='local:your-model' \
+ARC_PLANNER_MODEL='local:your-model' \
+ARC_MAX_ACTIONS=20 \
+ARC_RUN_DIR="$PWD/runs/physics-ls20-local" \
+./runPhysics.sh
+```
+
+The accepted model is readable at
+`<run-dir>/workspaces/hypotheses/innerContext/world_model.py`; durable task and
+thread state live under `<run-dir>/.egg/`.

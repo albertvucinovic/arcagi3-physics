@@ -7,6 +7,7 @@ from eggflow import FlowExecutor, Task, TaskStore
 from eggopt import ActorCritic, Agent, PhysicsStrategy
 
 from arcagi3_physics.environment import Execute, Observe
+from arcagi3_physics.run import build_parser
 from arcagi3_physics.solver import arc_physics
 from arcagi3_physics.tasks import Backtest, Hypothesize, deterministic_commitment
 from arcagi3_physics.world import (
@@ -245,6 +246,35 @@ def test_arc_physics_requires_file_editing_modeler(tmp_path):
             modeler=agent,
             planner=agent,
         )
+
+
+def test_offline_runner_defaults_to_ls20_seed_zero():
+    arguments = build_parser().parse_args([])
+
+    assert arguments.game == "ls20"
+    assert arguments.seed == 0
+    assert arguments.run_dir == Path("runs/physics-ls20-seed0")
+    assert arguments.modeler_model == "Pro: GPT-5.6 Sol max"
+    assert arguments.planner_model == "Pro: GPT-5.6 Sol max"
+
+
+def test_run_script_fails_fast_when_aiohttp_is_missing(tmp_path):
+    import os
+    import subprocess
+
+    python = tmp_path / "python"
+    python.write_text("#!/bin/sh\nexit 1\n")
+    python.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "runPhysics.sh", "--help"],
+        env={**os.environ, "PYTHON": str(python)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Missing aiohttp" in result.stderr
 
 
 def _freeze(value):
