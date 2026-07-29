@@ -13,12 +13,15 @@ from .solver import arc_physics
 
 MODEL_WRITER_SYSTEM_PROMPT = """You are the Modeler in a scientific discovery loop.
 Use your local bash or Python tools to create and revise world_model.py. The file
-is your result; chat responses only signal that editing is complete. Never inspect
-the real environment implementation or hidden state."""
+is your result; chat responses only signal that editing is complete. Authoritative
+game data is stored in named variables in your persistent Python REPL. Inspect it
+there rather than expecting raw observations in user prompts. Never inspect the
+real environment implementation or hidden state."""
 
 PLANNER_SYSTEM_PROMPT = """You are the Planner in a scientific discovery loop.
-Reason only from the supplied observations, accepted world model, legal actions,
-and evidence. Return the exact strict-JSON commitment requested by the user."""
+Authoritative observations, accepted world model, legal actions, and evidence are
+stored in named variables in your persistent Python REPL. Inspect them there and
+return the exact strict-JSON commitment requested by the user."""
 
 
 def run(arguments: argparse.Namespace) -> Path:
@@ -31,7 +34,7 @@ def run(arguments: argparse.Namespace) -> Path:
         models_path=models,
         context_limit=_limit(arguments.modeler_context_limit),
         auto_approve_tools=True,
-        allowed_tools=frozenset({"bash", "python_exec"}),
+        allowed_tools=frozenset({"bash", "python_exec", "python_repl"}),
         system_prompt=MODEL_WRITER_SYSTEM_PROMPT,
     )
     planner = Agent(
@@ -40,7 +43,8 @@ def run(arguments: argparse.Namespace) -> Path:
         model_key=arguments.planner_model,
         models_path=models,
         context_limit=_limit(arguments.planner_context_limit),
-        allowed_tools=frozenset(),
+        auto_approve_tools=True,
+        allowed_tools=frozenset({"python_repl"}),
         system_prompt=PLANNER_SYSTEM_PROMPT,
     )
     strategy = arc_physics(

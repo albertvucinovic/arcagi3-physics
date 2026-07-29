@@ -26,8 +26,10 @@ Physics
 The Modeler's chat response is only a completion signal. The accepted Task
 result is an immutable snapshot of `world_model.py`; the mutable workspace file
 is its editable projection. The Timeline lives in Eggflow results and is
-append-only. Every real action
-reconstructs the local game from its seed, replays the complete Timeline, and
+append-only. Before each Modeler or Planner turn, authoritative game-generated
+values are published into that role's persistent `python_repl`; prompts name the
+variables instead of duplicating grids and histories into model context. Every
+real action reconstructs the local game from its seed, replays the complete Timeline, and
 verifies reality before taking exactly one new action. A prediction mismatch
 aborts the unexecuted queue and returns evidence to the same Modeler thread.
 

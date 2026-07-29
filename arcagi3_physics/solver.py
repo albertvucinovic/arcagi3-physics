@@ -23,6 +23,11 @@ def arc_physics(
         raise ValueError("modeler must auto-approve tools to edit world_model.py")
     if not ({"bash", "python_exec"} & set(modeler.allowed_tools)):
         raise ValueError("modeler needs bash or python_exec to edit world_model.py")
+    for role, agent in (("modeler", modeler), ("planner", planner)):
+        if "python_repl" not in agent.allowed_tools:
+            raise ValueError(f"{role} needs python_repl to inspect ARC data")
+        if not agent.auto_approve_tools:
+            raise ValueError(f"{role} must auto-approve its python_repl tools")
 
     def observe(*, thread_id, **_):
         return PhysicsEffect(
