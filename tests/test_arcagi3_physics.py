@@ -300,7 +300,7 @@ def test_hypothesize_returns_world_model_file_snapshot(tmp_path, monkeypatch):
                 max_rounds=self.max_rounds,
                 names=("Modeler", "Backtest"),
             )
-            return snapshot_world_model(result.workspace)
+            return result.value
 
     class Value(Task):
         def __init__(self, value):

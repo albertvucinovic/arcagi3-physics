@@ -125,7 +125,7 @@ class Hypothesize(Task):
         )
         if not result.accepted:
             raise RuntimeError("Modeler exhausted its correction rounds")
-        return snapshot_world_model(result.workspace)
+        return result.value
 
     def _prompt(self, round_number, state):
         if round_number > 1:
@@ -218,6 +218,7 @@ class Backtest(Task):
         return {
             "decision": "accept",
             "feedback": "world_model.py replays the complete Timeline.",
+            "value": source,
         }
 
 
