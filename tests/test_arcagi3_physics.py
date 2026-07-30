@@ -215,8 +215,8 @@ def test_backtest_publishes_counterexample_instead_of_embedding_feedback(
         store.close()
         db.close()
 
-    assert result["decision"] == "revise"
-    assert marker not in result["feedback"]
+    assert result.decision == "revise"
+    assert marker not in result.feedback
     assert (
         namespace["new_evidence"]["counterexamples"][0]["actual"]["position"] == marker
     )
@@ -280,8 +280,8 @@ def test_backtest_missing_file_returns_actor_revision(tmp_path):
         result = __import__("asyncio").run(FlowExecutor(store).run(critic))
     finally:
         store.close()
-    assert result["decision"] == "revise"
-    assert "world_model.py" in result["feedback"]
+    assert result.decision == "revise"
+    assert "world_model.py" in result.feedback
 
 
 def test_hypothesize_returns_world_model_file_snapshot(tmp_path, monkeypatch):

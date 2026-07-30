@@ -190,13 +190,12 @@ class Backtest(Task):
             source = snapshot_world_model(self.workspace)
             report = yield RunBacktest(source, self.timeline, Path(self.workspace))
         except (ImportError, OSError, TypeError, ValueError, RuntimeError) as exc:
-            return {
-                "decision": "revise",
-                "feedback": (
+            return Critique.revise(
+                (
                     f"world_model.py is missing or invalid: {exc}. Use your tools to "
                     "create or repair ./world_model.py, save it to disk, then answer briefly."
                 ),
-            }
+            )
         if report["counterexamples"]:
             if self.actor_thread_id is None or self.tools is None:
                 raise RuntimeError("Backtest requires its assigned Modeler thread")
@@ -207,14 +206,13 @@ class Backtest(Task):
                 "modeler-counterexample",
                 self.tools,
             )
-            return {
-                "decision": "revise",
-                "feedback": (
+            return Critique.revise(
+                (
                     "Reality contradicts world_model.py. The authoritative counterexamples "
                     "are in Python variable `new_evidence`. Revise the file; the mismatch "
                     "may indict grounding, mechanism, rendering, or goal."
                 ),
-            }
+            )
         return Critique.accept(source, "world_model.py replays the complete Timeline.")
 
 
