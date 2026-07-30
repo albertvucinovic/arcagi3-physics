@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from eggflow import Task
-from eggopt import ActorCritic, Agent, ThreadTool
+from eggopt import ActorCritic, Agent, Critique, ThreadTool
 from eggopt.identity import canonical_json, digest_payload
 
 from .world import ensure_world_model, run_backtest, run_bfs, snapshot_world_model
@@ -215,11 +215,7 @@ class Backtest(Task):
                     "may indict grounding, mechanism, rendering, or goal."
                 ),
             }
-        return {
-            "decision": "accept",
-            "feedback": "world_model.py replays the complete Timeline.",
-            "value": source,
-        }
+        return Critique.accept(source, "world_model.py replays the complete Timeline.")
 
 
 @dataclass
