@@ -15,7 +15,12 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from arc_agi.rendering import COLOR_MAP, hex_to_rgb
-from eggthreads import ThreadsDB, list_threads, load_thread_projection
+from eggthreads import (
+    ThreadsDB,
+    get_thread_working_directory,
+    list_threads,
+    load_thread_projection,
+)
 
 _CLEAR = "\033[2J\033[H"
 _HIDE_CURSOR = "\033[?25l"
@@ -70,7 +75,9 @@ def load_review(run_dir: str | Path) -> Review:
     heads = _commit_subjects(repository, head)
     actor_commits = sum(not subject.startswith("[physics]") for subject in heads)
     critic_commits = len(heads) - actor_commits
-    actor_turns, critic_turns = _thread_turns(run / ".egg" / "threads.sqlite")
+    actor_turns, critic_turns = _thread_turns(
+        run / ".egg" / "threads.sqlite", run_dir=run
+    )
     if actor_turns == 0:
         actor_turns = actor_commits
     if critic_turns == 0:
@@ -259,7 +266,20 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _thread_turns(path: Path) -> tuple[int, int]:
+def _thread_turns(path: Path, *, run_dir: Path | None = None) -> tuple[int, int]:
+    run_dir = run_dir or path.parent.parent
+    shared = False
+    if not path.is_file():
+        benchmark_path = next(
+            (
+                parent / ".egg" / "threads.sqlite"
+                for parent in path.parents
+                if (parent / "benchmark.json").is_file()
+            ),
+            path,
+        )
+        path = benchmark_path
+        shared = path.is_file()
     if not path.is_file():
         return 0, 0
     db = ThreadsDB(path)
@@ -267,6 +287,12 @@ def _thread_turns(path: Path) -> tuple[int, int]:
         actor = critic = 0
         for thread in list_threads(db):
             if thread.name not in {"Actor", "Critic"}:
+                continue
+            working_directory = _thread_working_directory(db, thread.thread_id)
+            if shared and (
+                working_directory is None
+                or not working_directory.is_relative_to(run_dir)
+            ):
                 continue
             messages = load_thread_projection(db, thread.thread_id).messages
             turns = sum(
@@ -279,6 +305,13 @@ def _thread_turns(path: Path) -> tuple[int, int]:
         return actor, critic
     finally:
         db.close()
+
+
+def _thread_working_directory(db: ThreadsDB, thread_id: str) -> Path | None:
+    try:
+        return get_thread_working_directory(db, thread_id)
+    except (OSError, TypeError, ValueError):
+        return None
 
 
 def _commit_subjects(repository: Path, head: str) -> tuple[str, ...]:

@@ -375,3 +375,261 @@ def test_interactive_reviewer_fits_terminal_viewport(monkeypatch, tmp_path):
     with _raw_input(terminal):
         pass
     assert configured == [[0, 10, 0, 0, 0, 0, []], previous]
+
+
+def test_public_benchmark_discovers_all_local_environment_metadata(tmp_path):
+    import json
+
+    from arcagi3_physics.benchmark import discover_public_environments
+
+    for game, version in (("zz99", "first"), ("aa00", "second")):
+        directory = tmp_path / game / version
+        directory.mkdir(parents=True)
+        (directory / "metadata.json").write_text(
+            json.dumps({"game_id": f"{game}-{version}"})
+        )
+
+    assert discover_public_environments(tmp_path) == ("aa00", "zz99")
+
+
+def test_luna_benchmark_defaults_and_single_game_selection():
+    from eggthreads import RunnerConfig
+
+    from arcagi3_physics.benchmark import (
+        DEFAULT_MODEL,
+        _require_complete_public_suite,
+        _selected_games,
+        build_parser,
+        discover_public_environments,
+    )
+
+    arguments = build_parser().parse_args([])
+
+    assert arguments.actor_model == DEFAULT_MODEL == "Pro: GPT-5.6 Luna max"
+    assert arguments.max_parallel == 3
+    assert arguments.actor_context_limit == 300_000
+    scheduler = RunnerConfig(
+        max_concurrent_threads=arguments.max_parallel,
+        max_concurrent_llm_threads=arguments.max_parallel,
+    )
+    assert scheduler.effective_max_concurrent_llm_threads == 3
+    environments = Path("environment_files")
+    if environments.is_dir():
+        assert len(discover_public_environments(environments)) == 25
+    assert _selected_games(("aa00", "bb00"), ["bb00"]) == ("bb00",)
+    with pytest.raises(ValueError, match="unknown public"):
+        _selected_games(("aa00",), ["bb00"])
+    _require_complete_public_suite(tuple(f"g{i:02d}" for i in range(25)))
+    with pytest.raises(ValueError, match="requires all 25"):
+        _require_complete_public_suite(("aa00",))
+
+
+def test_luna_max_handle_has_max_reasoning_configuration():
+    from eggconfig import get_all_models_path, get_models_path
+
+    from arcagi3_physics.benchmark import DEFAULT_MODEL, _validate_luna_max
+
+    _validate_luna_max(
+        DEFAULT_MODEL,
+        str(get_models_path()),
+        str(get_all_models_path()),
+    )
+
+
+def test_prepare_selected_run_creates_selected_physics_tree(tmp_path):
+    import asyncio
+    import json
+
+    from arcagi3_physics.benchmark import build_parser, prepare
+
+    environments = tmp_path / "environment_files"
+    for game in ("aa00", "bb00"):
+        version = environments / game / "version"
+        version.mkdir(parents=True)
+        (version / "metadata.json").write_text(
+            json.dumps({"game_id": f"{game}-version"})
+        )
+    arguments = build_parser().parse_args(
+        [
+            "--environments-dir",
+            str(environments),
+            "--run-dir",
+            str(tmp_path / "run"),
+            "--games",
+            "aa00",
+        ]
+    )
+
+    prepared = asyncio.run(prepare(arguments))
+
+    assert prepared.games == ("aa00",)
+    configuration = json.loads((tmp_path / "run" / "benchmark.json").read_text())
+    assert configuration["games"] == ["aa00"]
+
+
+def test_benchmark_root_and_physics_children_are_cached(tmp_path):
+    import asyncio
+
+    from eggflow import FlowExecutor, TaskStore
+    from eggthreads import ThreadsDB, list_children_with_meta, list_root_threads
+
+    from arcagi3_physics.benchmark import (
+        ROOT_NAME,
+        _EnsureBenchmarkRoot,
+        _EnsurePhysicsRun,
+    )
+
+    db = ThreadsDB(tmp_path / "threads.sqlite")
+    db.init_schema()
+    flow = FlowExecutor(TaskStore(str(tmp_path / "flow.db")))
+
+    async def create_twice():
+        root_task = _EnsureBenchmarkRoot(db, "model", "models.json", "all.json")
+        root = await flow.run(root_task)
+        assert await flow.run(root_task) == root
+        child_task = _EnsurePhysicsRun(
+            db, root, "aa00", "model", "models.json", "all.json"
+        )
+        child = await flow.run(child_task)
+        assert await flow.run(child_task) == child
+        return root, child
+
+    try:
+        root, child = asyncio.run(create_twice())
+        assert list_root_threads(db) == [root]
+        assert db.get_thread(root).name == ROOT_NAME
+        assert list_children_with_meta(db, root)[0][:2] == (child, "Physics aa00")
+    finally:
+        flow.store.close()
+        db.close()
+
+
+def test_benchmark_configuration_round_trips_tuple_games(tmp_path):
+    from arcagi3_physics.benchmark import _ensure_configuration
+
+    path = tmp_path / "benchmark.json"
+    configuration = {"games": ("aa00", "bb00"), "model": "Luna"}
+
+    _ensure_configuration(path, configuration)
+    _ensure_configuration(path, configuration)
+
+    with pytest.raises(ValueError, match="configuration changed"):
+        _ensure_configuration(path, {"games": ("aa00",), "model": "Luna"})
+
+
+def test_shared_benchmark_thread_counts_are_scoped_to_environment(
+    tmp_path, monkeypatch
+):
+    from eggthreads import (
+        ThreadsDB,
+        append_message,
+        create_child_thread,
+        create_root_thread,
+        set_thread_working_directory,
+    )
+
+    from arcagi3_physics.review import _thread_turns
+
+    monkeypatch.chdir(tmp_path)
+    benchmark = tmp_path / "benchmark"
+    (benchmark / "benchmark.json").parent.mkdir(parents=True)
+    (benchmark / "benchmark.json").write_text("{}")
+    first_run = benchmark / "Physics aa00"
+    second_run = benchmark / "Physics bb00"
+    db = ThreadsDB(benchmark / ".egg" / "threads.sqlite")
+    db.init_schema()
+    root = create_root_thread(db, name="arc-agi-3-public")
+    for run, game in ((first_run, "aa00"), (second_run, "bb00")):
+        physics = create_child_thread(db, root, name=f"Physics {game}")
+        critic = create_child_thread(db, physics, name="Critic")
+        actor = create_child_thread(db, critic, name="Actor")
+        set_thread_working_directory(
+            db, critic, run / "workspace" / "critic-repository"
+        )
+        set_thread_working_directory(db, actor, run / "workspace" / "innerContext")
+        append_message(db, critic, "assistant", "reviewed")
+        append_message(db, actor, "assistant", "acted")
+    db.close()
+
+    assert _thread_turns(first_run / ".egg" / "threads.sqlite", run_dir=first_run) == (
+        1,
+        1,
+    )
+
+
+def test_environment_failure_isolated_into_durable_status(tmp_path):
+    import json
+
+    from eggflow import TaskError
+
+    from arcagi3_physics.benchmark import _failure, _RunEnvironment
+
+    failure = _failure(
+        "aa00",
+        tmp_path / "Physics aa00",
+        "thread-aa00",
+        0.0,
+        TaskError("provider failed", result=None),
+    )
+
+    assert failure.status == "failed"
+    assert Path(failure.traceback_path).is_file()
+    status = json.loads((tmp_path / "Physics aa00" / "status.json").read_text())
+    assert status["status"] == "failed"
+    assert "provider failed" in status["error"]
+
+    assert _RunEnvironment.cacheable is False
+
+
+def test_completed_environment_result_skips_reexecution(tmp_path):
+    import json
+
+    from arcagi3_physics.benchmark import _completed_result
+
+    run_dir = tmp_path / "Physics aa00"
+    run_dir.mkdir(parents=True)
+    value = {
+        "physics_thread_id": "thread-aa00",
+        "stopping_reason": "won",
+        "rounds": 3,
+        "head": "abc",
+        "value": {"actions": 7},
+    }
+    (run_dir / "result.json").write_text(json.dumps(value))
+
+    result = _completed_result("aa00", run_dir, "thread-aa00", value)
+
+    assert result.status == "completed"
+    assert result.actions == 7
+    assert result.stopping_reason == "won"
+
+
+def test_interrupted_summary_recovers_durable_environment_status(tmp_path):
+    import json
+
+    from arcagi3_physics.benchmark import _status_results
+
+    run = tmp_path / "benchmark"
+    first = run / "Physics aa00"
+    first.mkdir(parents=True)
+    (first / "status.json").write_text(
+        json.dumps(
+            {
+                "game": "aa00",
+                "status": "completed",
+                "run_dir": str(first),
+                "physics_thread_id": "thread-aa00",
+                "actions": 4,
+            }
+        )
+    )
+
+    results = _status_results(
+        ("aa00", "bb00"),
+        {"aa00": "thread-aa00", "bb00": "thread-bb00"},
+        run,
+    )
+
+    assert results[0].status == "completed"
+    assert results[0].actions == 4
+    assert results[1].status == "interrupted"
