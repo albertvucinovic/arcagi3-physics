@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 from eggopt import Agent, physics_actor_system_prompt
@@ -8,6 +10,12 @@ from eggopt import Agent, physics_actor_system_prompt
 from arcagi3_physics.environment import Execute, Initialize, clear_live_sessions
 from arcagi3_physics.run import build_parser
 from arcagi3_physics.solver import ARC_DOMAIN_PROMPT, arc_goal, arc_physics
+
+ANSI = re.compile(r"\033\[[0-?]*[ -/]*[@-~]")
+
+
+def strip_ansi(value: str) -> str:
+    return ANSI.sub("", value)
 
 
 class FakeState:
@@ -249,7 +257,7 @@ def test_reviewer_loads_critic_git_timeline_and_metadata(tmp_path):
     assert review.surviving_models == ("a",)
     assert review.generated_plans == 1
     assert frame(review, 1)["action"] == intent
-    output = render(review, 1, color=False)
+    output = render(review, 1, color=False, columns=80, lines=24)
     assert "frame 1/1" in output
     assert "Actor turns: 1" in output
     assert "Critic turns: 1" in output
@@ -260,10 +268,107 @@ def test_reviewer_loads_critic_git_timeline_and_metadata(tmp_path):
 
 
 def test_reviewer_defaults_to_configured_run():
-    from arcagi3_physics.review import _decode_key, build_parser
+    from arcagi3_physics.review import (
+        _decode_key,
+        _render_grid,
+        build_parser,
+    )
 
     assert build_parser().parse_args([]).run_dir == Path("runs/physics-ls20-seed0")
     assert _decode_key("\x1b[D") == "left"
     assert _decode_key("\x1b[C") == "right"
     assert _decode_key("\x1b[H") == "home"
     assert _decode_key("\x1b[F") == "end"
+
+    grid = tuple(
+        tuple((row + column) % 16 for column in range(64)) for row in range(64)
+    )
+    full = _render_grid(grid, color=True, columns=100, lines=40)
+    assert len(full) == 32
+    assert all(len(strip_ansi(line)) == 64 for line in full)
+    assert all(line.endswith("\033[0m") for line in full)
+    assert "\033[38;2;255;255;255m" in full[0]
+    assert "\033[48;2;204;204;204m" in full[0]
+
+    compact = _render_grid(grid, color=True, columns=40, lines=10)
+    assert len(compact) == 10
+    assert all(len(strip_ansi(line)) == 20 for line in compact)
+
+    medium = _render_grid(grid, color=True, columns=80, lines=40)
+    assert len(medium) == 32
+    assert all(len(strip_ansi(line)) == 64 for line in medium)
+
+    plain = _render_grid(grid, color=False, columns=20, lines=5)
+    assert len(plain) == 64
+    assert all(len(line) == 64 for line in plain)
+
+
+def test_interactive_reviewer_fits_terminal_viewport(monkeypatch, tmp_path):
+    from arcagi3_physics.review import Review, _raw_input, _terminal_viewport, render
+
+    grid = tuple(
+        tuple((row + column) % 16 for column in range(64)) for row in range(64)
+    )
+    state = {
+        "grid": (grid,),
+        "legal_actions": (1, 2, 3, 4),
+        "state": "NOT_FINISHED",
+        "levels_completed": 0,
+        "win_levels": 1,
+    }
+    review = Review(
+        repository=tmp_path / ("very-long-directory-name-" * 10),
+        timeline=(state,),
+        report={},
+        head="a" * 40,
+        actor_turns=100,
+        critic_turns=100,
+        actor_commits=100,
+        critic_commits=100,
+        evaluation_reports=100,
+        evaluated_head="b" * 40,
+        model_count=100,
+        surviving_models=("very-long-model-name",) * 10,
+        generated_plans=100,
+    )
+
+    for columns, lines in ((40, 24), (80, 24), (117, 124), (240, 100)):
+        output = render(review, 0, color=True, columns=columns, lines=lines)
+        visible = [strip_ansi(line) for line in output.splitlines()]
+        assert len(visible) <= lines
+        assert max(map(len, visible)) <= columns
+
+    large = render(review, 0, color=True, columns=117, lines=124)
+    grid_lines = [line for line in large.splitlines() if "▀" in strip_ansi(line)]
+    assert len(grid_lines) == 32
+    assert all(len(strip_ansi(line)) == 64 for line in grid_lines)
+
+    class Terminal:
+        def fileno(self):
+            return 42
+
+    monkeypatch.setattr(
+        "arcagi3_physics.review.os.get_terminal_size",
+        lambda _fd: __import__("os").terminal_size((80, 24)),
+    )
+    assert _terminal_viewport(Terminal()) == (76, 24)
+
+    class RawTerminal(Terminal):
+        pass
+
+    terminal = RawTerminal()
+    previous = [0, 10, 0, 0, 0, 0, []]
+    raw = [0, 20, 0, 0, 0, 0, []]
+    attributes = [previous, raw]
+    monkeypatch.setattr(
+        "arcagi3_physics.review.termios.tcgetattr", lambda _fd: attributes.pop(0)
+    )
+    monkeypatch.setattr("arcagi3_physics.review.tty.setraw", lambda _fd: None)
+    configured: list[Any] = []
+    monkeypatch.setattr(
+        "arcagi3_physics.review.termios.tcsetattr",
+        lambda _fd, _when, value: configured.append(value),
+    )
+    with _raw_input(terminal):
+        pass
+    assert configured == [[0, 10, 0, 0, 0, 0, []], previous]

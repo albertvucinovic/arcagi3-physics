@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
+import shutil
 import subprocess
 import sys
 import termios
@@ -12,12 +14,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
 
+from arc_agi.rendering import COLOR_MAP, hex_to_rgb
 from eggthreads import ThreadsDB, list_threads, load_thread_projection
 
 _CLEAR = "\033[2J\033[H"
 _HIDE_CURSOR = "\033[?25l"
 _SHOW_CURSOR = "\033[?25h"
 _RESET = "\033[0m"
+_DEFAULT_COLUMNS = 80
+_DEFAULT_LINES = 24
+_MIN_COLUMNS = 20
+
+# ARC-AGI-3's canonical palette.  Foreground and background colors let one
+# terminal cell represent two vertical game pixels without distorting the
+# square 64x64 image.
+_PALETTE = tuple(hex_to_rgb(COLOR_MAP[index]) for index in range(16))
 
 
 @dataclass(frozen=True)
@@ -110,14 +121,24 @@ def frame(review: Review, index: int) -> dict[str, Any]:
     return {"index": index, "state": state, "action": action, "transition": transition}
 
 
-def render(review: Review, index: int, *, color: bool = True) -> str:
+def render(
+    review: Review,
+    index: int,
+    *,
+    color: bool = True,
+    columns: int | None = None,
+    lines: int | None = None,
+) -> str:
     item = frame(review, index)
     state = item["state"]
     grid = _visible_grid(state.get("grid"))
     report = review.report
     plan = report.get("committed_plan") if isinstance(report, dict) else None
     models = report.get("compatible_models", ()) if isinstance(report, dict) else ()
-    lines = [
+    terminal_columns, terminal_lines = _terminal_viewport()
+    width = max(_MIN_COLUMNS, columns or terminal_columns)
+    height = lines or terminal_lines
+    metadata = [
         (
             f"ARC Physics review  frame {index}/{review.transitions}  "
             f"HEAD {review.head[:12]}"
@@ -143,23 +164,31 @@ def render(review: Review, index: int, *, color: bool = True) -> str:
         ),
         (
             "Arriving action: "
-            + (json.dumps(item["action"], sort_keys=True) if item["action"] else "initial observation")
+            + (
+                json.dumps(item["action"], sort_keys=True)
+                if item["action"]
+                else "initial observation"
+            )
         ),
         (
             f"Plan: {(plan or {}).get('purpose', '-')}  models: "
             f"{(plan or {}).get('models', ())}  compatible: {models}"
         ),
-        "",
     ]
-    lines.extend(_render_grid(grid, color=color))
-    lines.extend(
-        [
-            "",
-            "←/→ or h/l: previous/next   Home/End: first/latest   r: reload   q: quit",
-            f"Critic repository: {review.repository}",
-        ]
-    )
-    return "\n".join(lines)
+    footer = [
+        "←/→ or h/l: previous/next   Home/End: first/latest   r: reload   q: quit",
+        f"Critic repository: {review.repository}",
+    ]
+    if color:
+        metadata = [_clip(line, width) for line in metadata]
+        footer = [_clip(line, width) for line in footer]
+        grid_lines = max(1, height - len(metadata) - len(footer) - 2)
+    else:
+        grid_lines = None
+    output = [*metadata, ""]
+    output.extend(_render_grid(grid, color=color, columns=width, lines=grid_lines))
+    output.extend(["", *footer])
+    return "\n".join(output)
 
 
 def review(run_dir: str | Path, *, stream: TextIO = sys.stdout) -> None:
@@ -172,7 +201,12 @@ def review(run_dir: str | Path, *, stream: TextIO = sys.stdout) -> None:
         stream.write(_HIDE_CURSOR)
         try:
             while True:
-                stream.write(_CLEAR + render(current, index) + _RESET)
+                columns, lines = _terminal_viewport(stream)
+                stream.write(
+                    _CLEAR
+                    + render(current, index, columns=columns, lines=lines)
+                    + _RESET
+                )
                 stream.flush()
                 key = _read_key(sys.stdin)
                 if key in {"q", "escape"}:
@@ -188,7 +222,11 @@ def review(run_dir: str | Path, *, stream: TextIO = sys.stdout) -> None:
                 elif key == "r":
                     at_latest = index == current.transitions
                     current = load_review(run_dir)
-                    index = current.transitions if at_latest else min(index, current.transitions)
+                    index = (
+                        current.transitions
+                        if at_latest
+                        else min(index, current.transitions)
+                    )
         finally:
             stream.write(_SHOW_CURSOR + _RESET + "\n")
             stream.flush()
@@ -198,9 +236,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Review a live or completed ARC Physics run from its Critic repository."
     )
-    parser.add_argument(
-        "--run-dir", type=Path, default=Path("runs/physics-ls20-seed0")
-    )
+    parser.add_argument("--run-dir", type=Path, default=Path("runs/physics-ls20-seed0"))
     parser.add_argument(
         "--frame",
         type=int,
@@ -233,7 +269,9 @@ def _thread_turns(path: Path) -> tuple[int, int]:
             if thread.name not in {"Actor", "Critic"}:
                 continue
             messages = load_thread_projection(db, thread.thread_id).messages
-            turns = sum(message.payload.get("role") == "assistant" for message in messages)
+            turns = sum(
+                message.payload.get("role") == "assistant" for message in messages
+            )
             if thread.name == "Actor":
                 actor += turns
             else:
@@ -261,9 +299,7 @@ def _latest_evaluation(
     if selected is None:
         return None, {}
     try:
-        value = _git_json(
-            repository, head, f".trusted/evaluations/{selected}.json"
-        )
+        value = _git_json(repository, head, f".trusted/evaluations/{selected}.json")
     except (RuntimeError, TypeError, ValueError):
         return selected, {}
     return selected, value
@@ -307,17 +343,103 @@ def _visible_grid(value: Any) -> tuple[tuple[int, ...], ...]:
     return tuple(tuple(int(cell) for cell in row) for row in layer)
 
 
-def _render_grid(grid: tuple[tuple[int, ...], ...], *, color: bool) -> list[str]:
+def _render_grid(
+    grid: tuple[tuple[int, ...], ...],
+    *,
+    color: bool,
+    columns: int | None = None,
+    lines: int | None = None,
+) -> list[str]:
     if not grid:
         return ["(no grid in this frame)"]
     if not color:
         symbols = " .:-=+*#%@ABCDEF"
         return ["".join(symbols[cell % len(symbols)] for cell in row) for row in grid]
-    palette = (16, 21, 196, 46, 226, 201, 208, 51, 244, 15, 160, 34, 27, 129, 220, 231)
-    return [
-        "".join(f"\033[48;5;{palette[cell % 16]}m  " for cell in row) + _RESET
-        for row in grid
-    ]
+
+    available_columns, available_lines = _terminal_viewport()
+    width = columns or available_columns
+    height = lines or available_lines
+    fitted = _fit_grid(grid, width, height)
+    return [_half_block_row(top, bottom) for top, bottom in _row_pairs(fitted)]
+
+
+def _half_block_row(top: tuple[int, ...], bottom: tuple[int, ...]) -> str:
+    width = max(len(top), len(bottom))
+    parts: list[str] = []
+    previous: tuple[int, int] | None = None
+    for column in range(width):
+        colors = _cell(top, column), _cell(bottom, column)
+        if colors != previous:
+            parts.extend((_foreground(colors[0]), _background(colors[1])))
+            previous = colors
+        parts.append("▀")
+    return "".join(parts) + _RESET
+
+
+def _row_pairs(
+    grid: tuple[tuple[int, ...], ...],
+) -> Iterator[tuple[tuple[int, ...], tuple[int, ...]]]:
+    for index in range(0, len(grid), 2):
+        top = grid[index]
+        bottom = grid[index + 1] if index + 1 < len(grid) else top
+        yield top, bottom
+
+
+def _cell(row: tuple[int, ...], column: int) -> int:
+    return row[column] if column < len(row) else 0
+
+
+def _foreground(cell: int) -> str:
+    red, green, blue = _PALETTE[cell % len(_PALETTE)]
+    return f"\033[38;2;{red};{green};{blue}m"
+
+
+def _background(cell: int) -> str:
+    red, green, blue = _PALETTE[cell % len(_PALETTE)]
+    return f"\033[48;2;{red};{green};{blue}m"
+
+
+def _fit_grid(
+    grid: tuple[tuple[int, ...], ...], columns: int, lines: int
+) -> tuple[tuple[int, ...], ...]:
+    source_height = len(grid)
+    source_width = max(len(row) for row in grid)
+    scale = min(1.0, columns / source_width, (lines * 2) / source_height)
+    target_width = max(1, int(source_width * scale))
+    target_height = max(1, int(source_height * scale))
+    if target_width == source_width and target_height == source_height:
+        return grid
+    return tuple(
+        tuple(
+            _cell(
+                grid[_sample(source_height, target_height, row)],
+                _sample(source_width, target_width, column),
+            )
+            for column in range(target_width)
+        )
+        for row in range(target_height)
+    )
+
+
+def _sample(source: int, target: int, index: int) -> int:
+    return min(source - 1, ((index * 2 + 1) * source) // (target * 2))
+
+
+def _terminal_viewport(stream: TextIO = sys.stdout) -> tuple[int, int]:
+    try:
+        size = os.get_terminal_size(stream.fileno())
+    except (AttributeError, OSError):
+        size = shutil.get_terminal_size(fallback=(_DEFAULT_COLUMNS, _DEFAULT_LINES))
+    # OSC 8 links and wide-glyph handling differ among terminals. Reserving a
+    # small right margin prevents escape sequences from triggering auto-wrap.
+    columns = size.columns - max(4, size.columns // 20)
+    return max(_MIN_COLUMNS, columns), max(1, size.lines)
+
+
+def _clip(line: str, columns: int) -> str:
+    if len(line) <= columns:
+        return line
+    return line[: columns - 1] + "…"
 
 
 @contextlib.contextmanager
@@ -326,6 +448,11 @@ def _raw_input(stream: TextIO) -> Iterator[None]:
     previous = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
+        # setraw() changes both input and output flags. Keeping the original
+        # output flags lets the terminal continue translating LF to CRLF.
+        raw = termios.tcgetattr(fd)
+        raw[1] = previous[1]
+        termios.tcsetattr(fd, termios.TCSANOW, raw)
         yield
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, previous)
