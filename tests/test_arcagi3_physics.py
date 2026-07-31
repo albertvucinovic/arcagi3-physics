@@ -64,6 +64,8 @@ class FakeAction:
 
 
 def test_offline_session_reuses_live_env_and_replays_only_after_loss(monkeypatch):
+    import json
+
     from arcagi3_physics import environment
 
     environments = []
@@ -92,11 +94,12 @@ def test_offline_session_reuses_live_env_and_replays_only_after_loss(monkeypatch
 
     clear_live_sessions()
     t2 = {"state": first, "action": {"action": 1}, "next_state": second}
-    third = Execute("fake", 0, ".", (initial, t1, t2), {"action": 1}).run()
+    persisted = tuple(json.loads(json.dumps([initial, t1, t2])))
+    third = Execute("fake", 0, ".", persisted, {"action": 1}).run()
     assert len(environments) == 2
     assert environments[1].resets == 1
     assert environments[1].steps == 3
-    assert third["grid"] == (((3,),),)
+    assert third["grid"] == [[[3]]]
 
 
 def test_arc_goal_uses_trusted_public_completion_fields():

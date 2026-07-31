@@ -16,13 +16,12 @@ def observation(frame: Any) -> dict[str, Any]:
 
     if frame is None:
         raise RuntimeError("ARC environment returned no observation")
-    layers = tuple(
-        tuple(tuple(int(cell) for cell in row) for row in layer.tolist())
-        for layer in frame.frame
-    )
+    layers = [
+        [[int(cell) for cell in row] for row in layer.tolist()] for layer in frame.frame
+    ]
     return {
         "grid": layers,
-        "legal_actions": tuple(int(action) for action in frame.available_actions),
+        "legal_actions": [int(action) for action in frame.available_actions],
         "state": frame.state.value,
         "levels_completed": int(frame.levels_completed),
         "win_levels": int(frame.win_levels),
