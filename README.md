@@ -56,6 +56,11 @@ Useful overrides:
 ARC_ACTOR_MODEL='local:your-model' \
 ARC_MAX_ACTIONS=20 \
 ARC_MAX_PLAN_DEPTH=8 \
+ARC_CRITIC_TIMEOUT=300 \
 ARC_RUN_DIR="$PWD/runs/physics-ls20-local" \
 ./runPhysics.sh
 ```
+
+`ARC_CRITIC_TIMEOUT` bounds each trusted Critic evaluator subprocess. If Actor
+`world_model.py` hangs or plans for too long, Eggthreads terminates that isolated
+tool call and the Critic returns revision feedback instead of blocking the run.

@@ -144,6 +144,11 @@ def test_runner_and_prompt_defaults():
     assert arguments.game == "ls20"
     assert arguments.actor_model == "Pro: GPT-5.6 Sol max"
     assert arguments.max_plan_depth == 8
+    assert arguments.critic_timeout == 300
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--critic-timeout", "0"])
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--critic-timeout", "nan"])
     prompt = physics_actor_system_prompt(ARC_DOMAIN_PROMPT)
     assert "Git repository" in prompt
     assert "step_<suffix>" in prompt
@@ -408,6 +413,7 @@ def test_luna_benchmark_defaults_and_single_game_selection():
     assert arguments.actor_model == DEFAULT_MODEL == "Pro: GPT-5.6 Luna max"
     assert arguments.max_parallel == 3
     assert arguments.actor_context_limit == 300_000
+    assert arguments.critic_timeout == 300
     scheduler = RunnerConfig(
         max_concurrent_threads=arguments.max_parallel,
         max_concurrent_llm_threads=arguments.max_parallel,

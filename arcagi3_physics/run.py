@@ -32,6 +32,7 @@ def run(arguments: argparse.Namespace) -> Path:
         actor=actor,
         max_depth=arguments.max_plan_depth,
         max_nodes=arguments.max_plan_nodes,
+        evaluator_timeout_sec=arguments.critic_timeout,
     )
 
     print(
@@ -76,6 +77,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-cycles", type=_positive, default=100)
     parser.add_argument("--max-plan-depth", type=_positive, default=8)
     parser.add_argument("--max-plan-nodes", type=_positive, default=10_000)
+    parser.add_argument(
+        "--critic-timeout",
+        type=_positive,
+        default=300,
+        help="Maximum seconds for each trusted Critic evaluator subprocess.",
+    )
     parser.add_argument(
         "--actor-context-limit",
         type=_non_negative,

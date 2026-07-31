@@ -26,6 +26,7 @@ def arc_physics(
     actor: Agent,
     max_depth: int = 8,
     max_nodes: int = 10_000,
+    evaluator_timeout_sec: float = 300.0,
 ) -> PhysicsStrategy:
     """Map ARC environment effects and state semantics onto PhysicsStrategy."""
 
@@ -46,6 +47,7 @@ def arc_physics(
         legal_actions_key="legal_actions",
         max_depth=max_depth,
         max_nodes=max_nodes,
+        evaluator_timeout_sec=evaluator_timeout_sec,
     )
 
 

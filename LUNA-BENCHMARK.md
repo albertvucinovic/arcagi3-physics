@@ -90,7 +90,9 @@ Review one environment with the existing viewer:
 ```
 
 Useful overrides include `ARC_MAX_PARALLEL`, `ARC_MAX_ACTIONS`,
-`ARC_MAX_CYCLES`, `ARC_ACTOR_CONTEXT_LIMIT`, and `ARC_BENCHMARK_RUN_DIR`.
+`ARC_MAX_CYCLES`, `ARC_ACTOR_CONTEXT_LIMIT`, `ARC_CRITIC_TIMEOUT`, and
+`ARC_BENCHMARK_RUN_DIR`. `ARC_CRITIC_TIMEOUT` defaults to 300 seconds per trusted
+evaluator subprocess.
 
 Attach the Egg UI to the shared tree without starting another scheduler:
 

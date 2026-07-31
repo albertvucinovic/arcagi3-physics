@@ -43,6 +43,7 @@ args=(
   --actor-context-limit "${ARC_ACTOR_CONTEXT_LIMIT:-0}"
   --max-plan-depth "${ARC_MAX_PLAN_DEPTH:-8}"
   --max-plan-nodes "${ARC_MAX_PLAN_NODES:-10000}"
+  --critic-timeout "${ARC_CRITIC_TIMEOUT:-300}"
 )
 if [[ $# -gt 0 ]]; then
   args+=("$@")
