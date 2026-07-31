@@ -68,9 +68,7 @@ class Execute(Task):
             if env is None:
                 env = _recover(key, self.timeline)
                 _SESSIONS[key] = env
-            actual = _step(env, self.intent)
-        current = _current(self.timeline)
-        return {"state": current, "action": self.intent, "next_state": actual}
+            return _step(env, self.intent)
 
 
 def clear_live_sessions() -> None:
@@ -92,11 +90,6 @@ def _recover(key, timeline):
         if current != recorded["next_state"]:
             raise RuntimeError("ARC replay contradicts the immutable Timeline")
     return env
-
-
-def _current(timeline):
-    latest = timeline[-1]
-    return latest.get("next_state", latest)
 
 
 def _key(game, seed, environments_dir):
