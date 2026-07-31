@@ -226,6 +226,7 @@ def test_reviewer_loads_critic_git_timeline_and_metadata(tmp_path):
         ["git", "-C", str(repository), "commit", "-m", "[physics] trusted result"],
         check=True,
     )
+    (trusted / "state.json").write_text("not committed and not valid JSON")
 
     db = ThreadsDB(run / ".egg" / "threads.sqlite")
     db.init_schema()

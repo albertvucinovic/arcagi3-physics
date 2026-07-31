@@ -48,17 +48,15 @@ def load_review(run_dir: str | Path) -> Review:
     repository = run / "workspace" / "critic-repository"
     if not (repository / ".git").is_dir():
         raise FileNotFoundError(f"Critic Git repository not found: {repository}")
-    state_path = repository / ".trusted" / "state.json"
-    if not state_path.is_file():
-        raise FileNotFoundError(f"Critic canonical state not found: {state_path}")
-    state = json.loads(state_path.read_text())
+    head = _git(repository, "rev-parse", "HEAD")
+    state = _git_json(repository, head, ".trusted/state.json")
     timeline = tuple(state.get("timeline") or ())
     if not timeline:
         raise ValueError("Critic canonical Timeline is empty")
     report = state.get("last_report") or {}
     if not isinstance(report, dict):
         report = {}
-    heads = _commit_subjects(repository)
+    heads = _commit_subjects(repository, head)
     actor_commits = sum(not subject.startswith("[physics]") for subject in heads)
     critic_commits = len(heads) - actor_commits
     actor_turns, critic_turns = _thread_turns(run / ".egg" / "threads.sqlite")
@@ -66,13 +64,10 @@ def load_review(run_dir: str | Path) -> Review:
         actor_turns = actor_commits
     if critic_turns == 0:
         critic_turns = critic_commits
-    evaluations = repository / ".trusted" / "evaluations"
-    evaluation_files = (
-        tuple(path for path in evaluations.glob("*.json") if path.is_file())
-        if evaluations.is_dir()
-        else ()
+    evaluation_heads = _evaluation_heads(repository, head)
+    evaluated_head, evaluation = _latest_evaluation(
+        repository, head, evaluation_heads, report
     )
-    evaluated_head, evaluation = _latest_evaluation(evaluation_files, report)
     backtest = evaluation.get("backtest", {}) if isinstance(evaluation, dict) else {}
     planning = evaluation.get("planning", {}) if isinstance(evaluation, dict) else {}
     models = backtest.get("models", {}) if isinstance(backtest, dict) else {}
@@ -86,12 +81,12 @@ def load_review(run_dir: str | Path) -> Review:
         repository=repository,
         timeline=timeline,
         report=report,
-        head=_git(repository, "rev-parse", "HEAD"),
+        head=head,
         actor_turns=actor_turns,
         critic_turns=critic_turns,
         actor_commits=actor_commits,
         critic_commits=critic_commits,
-        evaluation_reports=len(evaluation_files),
+        evaluation_reports=len(evaluation_heads),
         evaluated_head=evaluated_head,
         model_count=len(models) if isinstance(models, dict) else 0,
         surviving_models=surviving,
@@ -248,25 +243,47 @@ def _thread_turns(path: Path) -> tuple[int, int]:
         db.close()
 
 
-def _commit_subjects(repository: Path) -> tuple[str, ...]:
-    output = _git(repository, "log", "--format=%s")
+def _commit_subjects(repository: Path, head: str) -> tuple[str, ...]:
+    output = _git(repository, "log", "--format=%s", head)
     return tuple(line for line in output.splitlines() if line)
 
 
 def _latest_evaluation(
-    paths: tuple[Path, ...], report: dict[str, Any]
+    repository: Path,
+    head: str,
+    evaluated_heads: tuple[str, ...],
+    report: dict[str, Any],
 ) -> tuple[str | None, dict[str, Any]]:
     preferred = str(report.get("head") or "")
-    selected = next((path for path in paths if path.stem == preferred), None)
-    if selected is None and paths:
-        selected = max(paths, key=lambda path: path.stat().st_mtime_ns)
+    selected = preferred if preferred in evaluated_heads else None
+    if selected is None and evaluated_heads:
+        selected = evaluated_heads[-1]
     if selected is None:
         return None, {}
     try:
-        value = json.loads(selected.read_text())
-    except (OSError, json.JSONDecodeError):
-        return selected.stem, {}
-    return selected.stem, value if isinstance(value, dict) else {}
+        value = _git_json(
+            repository, head, f".trusted/evaluations/{selected}.json"
+        )
+    except (RuntimeError, TypeError, ValueError):
+        return selected, {}
+    return selected, value
+
+
+def _evaluation_heads(repository: Path, head: str) -> tuple[str, ...]:
+    output = _git(repository, "ls-tree", "-r", "--name-only", head)
+    prefix = ".trusted/evaluations/"
+    return tuple(
+        Path(path).stem
+        for path in output.splitlines()
+        if path.startswith(prefix) and path.endswith(".json")
+    )
+
+
+def _git_json(repository: Path, head: str, path: str) -> dict[str, Any]:
+    value = json.loads(_git(repository, "show", f"{head}:{path}"))
+    if not isinstance(value, dict):
+        raise TypeError(f"Critic Git JSON must be an object: {path}")
+    return value
 
 
 def _git(repository: Path, *arguments: str) -> str:
