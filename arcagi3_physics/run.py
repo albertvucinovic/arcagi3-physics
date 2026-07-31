@@ -6,58 +6,37 @@ from dataclasses import asdict
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from eggopt import Agent
+from eggopt import Agent, physics_actor_system_prompt
 from eggthreads import create_llm_client
 
-from .solver import arc_physics
-
-MODEL_WRITER_SYSTEM_PROMPT = """You are the Modeler in a scientific discovery loop.
-Use your local bash or Python tools to create and revise world_model.py. The file
-is your result; chat responses only signal that editing is complete. Authoritative
-game data is stored in named variables in your persistent Python REPL. Inspect it
-there rather than expecting raw observations in user prompts. Never inspect the
-real environment implementation or hidden state."""
-
-PLANNER_SYSTEM_PROMPT = """You are the Planner in a scientific discovery loop.
-Authoritative observations, accepted world model, legal actions, and evidence are
-stored in named variables in your persistent Python REPL. Inspect them there and
-return the exact strict-JSON commitment requested by the user."""
+from .solver import ARC_DOMAIN_PROMPT, arc_physics
 
 
 def run(arguments: argparse.Namespace) -> Path:
     models, all_models = _model_paths(arguments.models, arguments.all_models)
     llm = create_llm_client(models_path=models, all_models_path=all_models)
-    modeler = Agent(
+    actor = Agent(
         llm,
-        {"role": "arc-physics-modeler", "version": 1},
-        model_key=arguments.modeler_model,
+        {"role": "arc-physics-actor", "version": 2},
+        model_key=arguments.actor_model,
         models_path=models,
-        context_limit=_limit(arguments.modeler_context_limit),
+        context_limit=_limit(arguments.actor_context_limit),
         auto_approve_tools=True,
-        allowed_tools=frozenset({"bash", "python_exec", "python_repl"}),
-        system_prompt=MODEL_WRITER_SYSTEM_PROMPT,
-    )
-    planner = Agent(
-        llm,
-        {"role": "arc-physics-planner", "version": 1},
-        model_key=arguments.planner_model,
-        models_path=models,
-        context_limit=_limit(arguments.planner_context_limit),
-        auto_approve_tools=True,
-        allowed_tools=frozenset({"python_repl"}),
-        system_prompt=PLANNER_SYSTEM_PROMPT,
+        allowed_tools=frozenset({"bash", "python_exec"}),
+        system_prompt=physics_actor_system_prompt(ARC_DOMAIN_PROMPT),
     )
     strategy = arc_physics(
         game=arguments.game,
         seed=arguments.seed,
         environments_dir=arguments.environments_dir,
-        modeler=modeler,
-        planner=planner,
+        actor=actor,
+        max_depth=arguments.max_plan_depth,
+        max_nodes=arguments.max_plan_nodes,
     )
 
     print(
         f"ARC Physics: game={arguments.game} seed={arguments.seed} "
-        f"modeler={arguments.modeler_model!r} planner={arguments.planner_model!r}"
+        f"actor={arguments.actor_model!r}"
     )
     result = strategy.run(
         run_dir=arguments.run_dir,
@@ -68,12 +47,12 @@ def run(arguments: argparse.Namespace) -> Path:
     _write_json(destination, asdict(result))
     print(
         f"ARC Physics stopped: {result.stopping_reason}; "
-        f"actions={result.actions}; cycles={result.cycles}"
+        f"rounds={result.rounds}; head={result.head}"
     )
     print(f"Result: {destination.resolve()}")
     print(
-        "World model: "
-        f"{(Path(arguments.run_dir) / 'workspaces/hypotheses/innerContext/world_model.py').resolve()}"
+        "Actor repository: "
+        f"{(Path(arguments.run_dir) / 'workspace/innerContext').resolve()}"
     )
     print(f"Physics thread: {result.physics_thread_id}")
     return destination
@@ -81,7 +60,7 @@ def run(arguments: argparse.Namespace) -> Path:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run the Eggopt PhysicsStrategy on one local ARC-AGI-3 game."
+        description="Run Git-backed Eggopt PhysicsStrategy on one ARC-AGI-3 game."
     )
     parser.add_argument("--game", default="ls20")
     parser.add_argument("--seed", type=int, default=0)
@@ -89,20 +68,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--environments-dir", type=Path, default=Path("environment_files")
     )
     parser.add_argument("--run-dir", type=Path, default=Path("runs/physics-ls20-seed0"))
-    parser.add_argument("--modeler-model", default="Pro: GPT-5.6 Sol max")
-    parser.add_argument("--planner-model", default="Pro: GPT-5.6 Sol max")
+    parser.add_argument("--actor-model", default="Pro: GPT-5.6 Sol max")
     parser.add_argument("--models", type=Path)
     parser.add_argument("--all-models", type=Path)
     parser.add_argument("--max-actions", type=_positive, default=50)
     parser.add_argument("--max-cycles", type=_positive, default=100)
+    parser.add_argument("--max-plan-depth", type=_positive, default=8)
+    parser.add_argument("--max-plan-nodes", type=_positive, default=10_000)
     parser.add_argument(
-        "--modeler-context-limit",
-        type=_non_negative,
-        default=0,
-        help="Full-history token limit; 0 means unlimited.",
-    )
-    parser.add_argument(
-        "--planner-context-limit",
+        "--actor-context-limit",
         type=_non_negative,
         default=0,
         help="Full-history token limit; 0 means unlimited.",

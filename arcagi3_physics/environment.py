@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from eggflow import Task
 
+_SESSIONS: dict[tuple[str, int, str], Any] = {}
+_SESSIONS_LOCK = threading.Lock()
+
 
 def observation(frame: Any) -> dict[str, Any]:
     """Return only public ARC observation fields as durable Python values."""
 
+    if frame is None:
+        raise RuntimeError("ARC environment returned no observation")
     layers = tuple(
         tuple(tuple(int(cell) for cell in row) for row in layer.tolist())
         for layer in frame.frame
@@ -24,14 +30,25 @@ def observation(frame: Any) -> dict[str, Any]:
 
 
 @dataclass
-class Observe(Task):
+class Initialize(Task):
     game: str
     seed: int
     environments_dir: str | Path
 
     def run(self):
-        env = _environment(self.game, self.seed, self.environments_dir)
-        return observation(env.reset())
+        key = _key(self.game, self.seed, self.environments_dir)
+        with _SESSIONS_LOCK:
+            env = _SESSIONS.get(key)
+            if env is None:
+                env = _environment(*key)
+                initial = observation(env.reset())
+                _SESSIONS[key] = env
+            else:
+                last = getattr(env, "last_response", None)
+                initial = (
+                    observation(last) if last is not None else observation(env.reset())
+                )
+        return initial
 
 
 @dataclass
@@ -42,19 +59,48 @@ class Execute(Task):
     timeline: tuple[Any, ...]
     intent: Any
 
+    cacheable = False
+
     def run(self):
-        env = _environment(self.game, self.seed, self.environments_dir)
-        current = observation(env.reset())
-        if current != self.timeline[0]:
-            raise RuntimeError(
-                "ARC reset does not reproduce the recorded initial observation"
-            )
-        for recorded in self.timeline[1:]:
-            current = _step(env, recorded["intent"])
-            if current != recorded["observation"]:
-                raise RuntimeError("ARC replay contradicts the immutable Timeline")
-        actual = _step(env, self.intent)
-        return {"intent": self.intent, "observation": actual}
+        key = _key(self.game, self.seed, self.environments_dir)
+        with _SESSIONS_LOCK:
+            env = _SESSIONS.get(key)
+            if env is None:
+                env = _recover(key, self.timeline)
+                _SESSIONS[key] = env
+            actual = _step(env, self.intent)
+        current = _current(self.timeline)
+        return {"state": current, "action": self.intent, "next_state": actual}
+
+
+def clear_live_sessions() -> None:
+    """Forget process-local sessions; the next action recovers by verified replay."""
+
+    with _SESSIONS_LOCK:
+        _SESSIONS.clear()
+
+
+def _recover(key, timeline):
+    env = _environment(*key)
+    current = observation(env.reset())
+    if current != timeline[0]:
+        raise RuntimeError(
+            "ARC reset does not reproduce the recorded initial observation"
+        )
+    for recorded in timeline[1:]:
+        current = _step(env, recorded["action"])
+        if current != recorded["next_state"]:
+            raise RuntimeError("ARC replay contradicts the immutable Timeline")
+    return env
+
+
+def _current(timeline):
+    latest = timeline[-1]
+    return latest.get("next_state", latest)
+
+
+def _key(game, seed, environments_dir):
+    return game, int(seed), str(Path(environments_dir).resolve())
 
 
 def _environment(game: str, seed: int, environments_dir: str | Path):
@@ -78,7 +124,4 @@ def _step(env, intent):
     action = GameAction.from_id(int(action))
     if action not in env.action_space:
         raise ValueError(f"ARC action is not currently legal: {action.name}")
-    frame = env.step(action, data=data)
-    if frame is None:
-        raise RuntimeError("ARC environment returned no observation")
-    return observation(frame)
+    return observation(env.step(action, data=data))

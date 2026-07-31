@@ -1,70 +1,76 @@
-# ARC-AGI-3 Physics solver
+# ARC-AGI-3 Git Physics solver
 
-This repository proves Eggopt's general `PhysicsStrategy` against a real local
-ARC-AGI-3 environment without placing ARC concepts in Eggopt.
+This repository maps ARC-AGI-3 onto Eggopt's Git-backed `PhysicsStrategy`.
+The strategy is one canonical ActorCritic hierarchy:
 
 ```text
 Physics
-├── Environment              Observe/Execute effect history
-├── Hypotheses
-│   └── Backtest
-│       └── Modeler          persistent Actor
-└── Plan
-    └── Plan Review
-        └── Planner          persistent Actor
+└── Critic                    trusted validation and environment authority
+    └── Actor                 persistent theorist and planner
 ```
 
-`arcagi3_physics.arc_physics(...)` composes:
+The Actor owns a writable Git repository at:
 
-- durable reset/replay/one-action environment Tasks;
-- one Modeler `ActorCritic` that edits a normal `world_model.py` as one
-  provisional hypothesis and repairs it from complete-Timeline counterexamples;
-- one Planner `ActorCritic` that emits a model-backed plan or one cheap
-  falsifying/discovery action with frozen pre-action predictions;
-- compile/backtest and deterministic BFS over the one accepted model.
+```text
+<run-dir>/workspace/innerContext/
+```
 
-The Modeler's chat response is only a completion signal. The accepted Task
-result is an immutable snapshot of `world_model.py`; the mutable workspace file
-is its editable projection. The Timeline lives in Eggflow results and is
-append-only. Before each Modeler or Planner turn, authoritative game-generated
-values are published into that role's persistent `python_repl`; prompts name the
-variables instead of duplicating grids and histories into model context. Every
-real action reconstructs the local game from its seed, replays the complete Timeline, and
-verifies reality before taking exactly one new action. A prediction mismatch
-aborts the unexecuted queue and returns evidence to the same Modeler thread.
+The Critic keeps a pulled history copy at:
 
-The existing `arcagi3_cli.py` remains independent and unchanged by this solver.
-No benchmark or model run is launched automatically.
+```text
+<run-dir>/workspace/critic-repository/
+```
 
-## Run one offline game
+## Actor contract
 
-`runPhysics.sh` runs `ls20`, seed `0`, and resumes from the same run directory
-when launched again:
+`world_model.py` is the current theory. Multiple competing models coexist as
+matching `step_<suffix>` and `reward_<suffix>` functions. The Actor reads
+`INSTRUCTIONS.md` and uses:
+
+- `python backtest.py` — replay every model over the Timeline;
+- `python plan.py` — find goal plans for all valid models and multi-action
+  discrimination plans for model subsets;
+- `python commit.py PLAN_ID` — write `committed-plan.json` and make the Actor's
+  Git commit.
+
+Every turn must finish with a clean new Git HEAD and a non-empty plan. Scratch
+files may be `.gitignore`d. If the Actor deletes or corrupts `.git`, the Critic
+restores its pulled history and rehydrates the latest canonical game state.
+
+## Trusted Critic
+
+The Critic pulls Actor HEAD, evaluates that committed snapshot in its own clone,
+and independently reruns the canonical backtest and planner. It rejects dirty
+repositories, missing commits, invalid model APIs, empty plans, and plans not
+returned by the trusted planner. Planning reports include every valid model,
+even a model that currently contradicts the Timeline; such a model must be
+repaired before its plan may cross the real-action boundary.
+
+An intent combines an action with predictions keyed by model suffix. An
+experiment may have a common setup prefix. The Critic executes one intent at a
+time and stops on the first wrong prediction or after executing the first intent
+whose predictions actually branch. Only the Critic can touch the environment.
+
+Offline play uses one live environment session: reset once at initial creation,
+then ordinary actions reuse that session. Reset plus verified Timeline replay is
+used only to recover a lost process-local session after interruption.
+
+## Run
 
 ```bash
 ./runPhysics.sh
 ```
 
-The ARC venv needs Eggllm's async streaming dependency:
+Defaults: game `ls20`, seed `0`, Actor `Pro: GPT-5.6 Sol max`. Override without
+editing the script:
 
 ```bash
-venv/bin/python -m pip install 'aiohttp>=3.9'
-```
-
-The script checks this before opening or resuming a run.
-
-It uses `Pro: GPT-5.6 Sol max` for Modeler and Planner by default, sources API
-keys from the egg-mono `.env` when present, and never starts a model server.
-Override settings without editing the script:
-
-```bash
-ARC_MODELER_MODEL='local:your-model' \
-ARC_PLANNER_MODEL='local:your-model' \
+ARC_ACTOR_MODEL='local:your-model' \
 ARC_MAX_ACTIONS=20 \
+ARC_MAX_PLAN_DEPTH=8 \
 ARC_RUN_DIR="$PWD/runs/physics-ls20-local" \
 ./runPhysics.sh
 ```
 
-The accepted model is readable at
-`<run-dir>/workspaces/hypotheses/innerContext/world_model.py`; durable task and
-thread state live under `<run-dir>/.egg/`.
+The script sources Egg's `.env`, uses the existing ARC virtual environment, and
+resumes from the same run-owned `.egg` and Git repositories.

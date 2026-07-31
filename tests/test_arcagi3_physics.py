@@ -1,426 +1,157 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
-from eggflow import FlowExecutor, Task, TaskStore
-from eggopt import ActorCritic, Agent, PhysicsStrategy
-from eggthreads import ThreadsDB, ToolRegistry, list_threads, load_thread_projection
+from eggflow import FlowExecutor, TaskStore
+from eggopt import Agent, physics_actor_system_prompt
 
-from arcagi3_physics.environment import Execute, Observe
-from arcagi3_physics.run import build_parser
-from arcagi3_physics.solver import arc_physics
-from arcagi3_physics.tasks import (
-    Backtest,
-    Deliberate,
-    Hypothesize,
-    PublishData,
-    deterministic_commitment,
+from arcagi3_physics.environment import Execute, Initialize, clear_live_sessions
+from arcagi3_physics.instruments import (
+    actor_backtest,
+    actor_commit,
+    actor_plan,
+    write_actor_files,
 )
+from arcagi3_physics.run import build_parser
+from arcagi3_physics.solver import ARC_DOMAIN_PROMPT, arc_physics
+from arcagi3_physics.tasks import ARCCritic
 from arcagi3_physics.world import (
     WORLD_MODEL_TEMPLATE,
+    canonical_plans,
+    discover_models,
     ensure_world_model,
+    load_model,
     run_backtest,
-    run_bfs,
-    snapshot_world_model,
+    run_planner,
 )
 
-WORLD_MODEL = """
-def ground(history):
-    latest = history[-1]
-    observation = latest.get("observation", latest)
-    return observation["position"]
+MODEL = """
+def step_left(state, action):
+    value = action["action"] if isinstance(action, dict) else action
+    return {"position": state["position"] + value, "legal_actions": [1, 2]}
 
-def step(state, action):
-    value = action['action'] if isinstance(action, dict) else action
-    return state + value
+def reward_left(state):
+    return float(state["position"] >= 2)
 
-def render(state):
-    return {"position": state, "legal_actions": (1, 2)}
+def step_right(state, action):
+    value = action["action"] if isinstance(action, dict) else action
+    delta = value if state["position"] else value
+    return {"position": state["position"] + delta, "legal_actions": [1, 2]}
 
-def is_goal(state):
-    return state >= 2
+def reward_right(state):
+    return float(state["position"] >= 3)
+"""
+
+DISAGREEING = """
+def step_a(state, action):
+    return {"position": state["position"] + 1, "legal_actions": [1]}
+
+def reward_a(state):
+    return float(state["position"] >= 2)
+
+def step_b(state, action):
+    delta = 1 if state["position"] == 0 else 2
+    return {"position": state["position"] + delta, "legal_actions": [1]}
+
+def reward_b(state):
+    return float(state["position"] >= 3)
 """
 
 
-class ScriptedLLM:
-    current_model_key = "test-model"
+def test_discovers_matching_step_reward_pairs(tmp_path):
+    module = load_model(MODEL, tmp_path)
+    assert set(discover_models(module)) == {"left", "right"}
 
-    def __init__(self, replies):
-        self.replies = iter(replies)
-        self.calls = 0
-        self.messages = []
-
-    def set_model(self, key):
-        self.current_model_key = key
-
-    def set_model_with_config(self, key, _config):
-        self.current_model_key = key
-
-    async def astream_chat(self, messages, **_kwargs):
-        self.calls += 1
-        self.messages.append(messages)
-        yield {
-            "type": "message",
-            "role": "assistant",
-            "content": next(self.replies),
-            "stop_reason": "end_turn",
-        }
+    bad = MODEL + "\ndef step_orphan(state, action): return state\n"
+    with pytest.raises(ValueError, match="suffixes must match"):
+        discover_models(load_model(bad, tmp_path / "bad"))
 
 
-def test_role_prompts_reference_repl_without_embedding_game_data():
-    marker = "GAME_PAYLOAD_MUST_NOT_ENTER_PROMPT"
-    timeline = ({"marker": marker, "legal_actions": (1,)},)
-    tools = ToolRegistry()
-    agent = Agent(
-        ScriptedLLM([]),
-        {"role": "prompt-test"},
-        tools=tools,
-        allowed_tools=frozenset(),
-    )
-    state = {"actor_thread_id": "actor", "feedback": ""}
-
-    modeler = Hypothesize(agent, timeline, None, {"marker": marker}, "workspace")
-    planner = Deliberate(agent, timeline, marker, {"marker": marker}, "workspace")
-    modeler_prompt = modeler._prompt(1, state)
-    planner_prompt = planner._prompt(1, state)
-
-    assert marker not in modeler_prompt.prompt
-    assert marker not in planner_prompt.prompt
-    assert "`timeline`" in modeler_prompt.prompt
-    assert "`latest_observation`" in modeler_prompt.prompt
-    assert "`world_model_source`" in planner_prompt.prompt
-    assert "`legal_actions`" in planner_prompt.prompt
-    assert marker in str(modeler_prompt.values)
-    assert marker in str(planner_prompt.values)
-    assert "python_repl" in modeler._prompt(2, {**state, "feedback": "Revise."})
-    assert "python_repl" in planner._prompt(2, {**state, "feedback": "Revise."})
-
-
-def test_publish_data_assigns_authoritative_repl_variables(tmp_path, monkeypatch):
-    from eggopt.context import _bind_evaluation_runtime, _evaluation_scope
-    from eggthreads import ThreadsDB, create_root_thread
-
-    monkeypatch.chdir(tmp_path)
-    db = ThreadsDB(tmp_path / "threads.sqlite")
-    db.init_schema()
-    thread_id = create_root_thread(db, name="Planner")
-    runtime_key = "arc-publish-test"
-    _bind_evaluation_runtime(runtime_key, db)
-    captured = {}
-    namespace = {}
-    tools = ToolRegistry()
-
-    def python_repl(arguments, context):
-        assert context.thread_id == thread_id
-        exec(arguments["code"], namespace)  # noqa: S102 - exercise generated REPL code
-        if all(name in namespace for name in ("timeline", "legal_actions")):
-            captured.update(
-                {name: namespace[name] for name in ("timeline", "legal_actions")}
-            )
-        return "Published"
-
-    tools.register(
-        "python_repl",
-        "Test REPL",
-        {"type": "object", "properties": {"code": {"type": "string"}}},
-        python_repl,
-        accepts_context=True,
-    )
-    task = PublishData(
-        thread_id,
-        {"timeline": ({"position": 0},), "legal_actions": (1, 2)},
-        1,
-        "planner",
-        tools,
-    )
-    store = TaskStore(str(tmp_path / "flow.db"))
-    try:
-        with _evaluation_scope(
-            {
-                "evaluation_thread_id": thread_id,
-                "_runtime_key": runtime_key,
-                "_evaluation_key": "publish",
-                "_context_limit": None,
-            }
-        ):
-            __import__("asyncio").run(FlowExecutor(store).run(task))
-    finally:
-        store.close()
-        db.close()
-
-    assert captured == {
-        "timeline": [{"position": 0}],
-        "legal_actions": [1, 2],
-    }
-
-
-def test_backtest_publishes_counterexample_instead_of_embedding_feedback(
-    tmp_path, monkeypatch
-):
-    from eggopt.context import _bind_evaluation_runtime, _evaluation_scope
-    from eggthreads import ThreadsDB, create_root_thread
-
-    monkeypatch.chdir(tmp_path)
-    Path(tmp_path, "world_model.py").write_text(WORLD_MODEL)
-    marker = "COUNTEREXAMPLE_MUST_NOT_ENTER_FEEDBACK"
+def test_backtest_reports_all_models_and_survivors(tmp_path):
     timeline = (
-        {"position": 0, "legal_actions": (1,)},
+        {"position": 0, "legal_actions": [1, 2]},
         {
-            "intent": {"action": 1},
-            "observation": {"position": marker, "legal_actions": (1,)},
+            "state": {"position": 0, "legal_actions": [1, 2]},
+            "action": {"action": 1},
+            "next_state": {"position": 1, "legal_actions": [1, 2]},
         },
     )
-    db = ThreadsDB(tmp_path / "threads.sqlite")
-    db.init_schema()
-    actor_id = create_root_thread(db, name="Modeler")
-    runtime_key = "arc-counterexample-test"
-    _bind_evaluation_runtime(runtime_key, db)
-    namespace = {}
-    tools = ToolRegistry()
+    report = run_backtest(MODEL, timeline, tmp_path)
 
-    def python_repl(arguments, _context):
-        exec(arguments["code"], namespace)  # noqa: S102 - exercise generated code
-        return "Published"
+    assert set(report["models"]) == {"left", "right"}
+    assert report["surviving_models"] == ["left", "right"]
 
-    tools.register(
-        "python_repl",
-        "Test REPL",
-        {"type": "object", "properties": {"code": {"type": "string"}}},
-        python_repl,
-        accepts_context=True,
-    )
-    store = TaskStore(str(tmp_path / "flow.db"))
-    try:
-        with _evaluation_scope(
-            {
-                "evaluation_thread_id": actor_id,
-                "_runtime_key": runtime_key,
-                "_evaluation_key": "counterexample",
-                "_context_limit": None,
-            }
-        ):
-            result = __import__("asyncio").run(
-                FlowExecutor(store).run(
-                    Backtest(
-                        timeline,
-                        str(tmp_path),
-                        actor_thread_id=actor_id,
-                        round_number=1,
-                        tools=tools,
-                    )
-                )
-            )
-    finally:
-        store.close()
-        db.close()
 
-    assert result.decision == "revise"
-    assert marker not in result.feedback
+def test_planner_reports_goal_and_multistep_discrimination_for_all_models(tmp_path):
+    timeline = ({"position": 0, "legal_actions": [1]},)
+    report = run_planner(DISAGREEING, timeline, tmp_path, max_depth=4)
+
+    assert set(report["goal_plans"]) == {"a", "b"}
+    experiment = report["discrimination_plans"][0]
+    assert experiment["models"] == ("a", "b")
+    assert len(experiment["plan"]) == 2
     assert (
-        namespace["new_evidence"]["counterexamples"][0]["actual"]["position"] == marker
+        experiment["plan"][0]["prediction"]["a"]
+        == experiment["plan"][0]["prediction"]["b"]
     )
+    assert (
+        experiment["plan"][1]["prediction"]["a"]
+        != experiment["plan"][1]["prediction"]["b"]
+    )
+    assert canonical_plans(report)
 
 
-def test_world_model_file_backtest_and_plan(tmp_path):
-    model_path = tmp_path / "world_model.py"
-    model_path.write_text(WORLD_MODEL)
-    source = snapshot_world_model(tmp_path)
+def test_planner_keeps_reports_for_models_that_fail_backtest(tmp_path):
     timeline = (
-        {"position": 0, "legal_actions": (1, 2)},
+        {"position": 0, "legal_actions": [1]},
         {
-            "intent": {
-                "action": 1,
-                "prediction": {"position": 1, "legal_actions": (1, 2)},
-            },
-            "observation": {"position": 1, "legal_actions": (1, 2)},
+            "state": {"position": 0, "legal_actions": [1]},
+            "action": {"action": 1},
+            "next_state": {"position": 99, "legal_actions": [1]},
         },
     )
+    backtest = run_backtest(DISAGREEING, timeline, tmp_path / "backtest")
+    planning = run_planner(DISAGREEING, timeline, tmp_path / "planning", max_depth=3)
 
-    report = run_backtest(source, timeline, tmp_path / "backtest")
-    assert report == {"matches": 1, "counterexamples": []}
+    assert backtest["surviving_models"] == []
+    assert set(planning["goal_plans"]) == {"a", "b"}
+    assert planning["discrimination_plans"]
 
-    plan = run_bfs(source, timeline, (1, 2), tmp_path / "bfs")
-    assert plan == (
-        {
-            "action": 1,
-            "prediction": {"position": 2, "legal_actions": (1, 2)},
-        },
+
+def test_actor_instruments_backtest_plan_and_commit(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    ensure_world_model(tmp_path).write_text(DISAGREEING)
+    write_actor_files(tmp_path, ({"position": 0, "legal_actions": [1]},))
+    __import__("subprocess").run(["git", "init", "-b", "main"], check=True)
+    __import__("subprocess").run(["git", "config", "user.name", "test"], check=True)
+    __import__("subprocess").run(
+        ["git", "config", "user.email", "test@test"], check=True
     )
+    __import__("subprocess").run(["git", "add", "-A"], check=True)
+    __import__("subprocess").run(["git", "commit", "-m", "initial"], check=True)
 
+    actor_backtest()
+    actor_plan()
+    report = json.loads(Path("plan-report.json").read_text())
+    plan_id = next(
+        item["plan_id"]
+        for item in report["canonical_plans"]
+        if item["plan"]["purpose"] == "experiment"
+    )
+    actor_commit(plan_id)
 
-def test_deterministic_commitment_prefers_goal_plan(tmp_path):
-    timeline = ({"position": 0, "legal_actions": (1, 2)},)
-    assert deterministic_commitment(WORLD_MODEL, timeline, tmp_path)[0]["action"] == 2
-
-
-def test_world_model_skeleton_documents_exact_single_model_api(tmp_path):
-    path = ensure_world_model(tmp_path)
-    source = path.read_text()
-
-    assert source == WORLD_MODEL_TEMPLATE
-    assert "def ground(history):" in source
-    assert "def step(state, action):" in source
-    assert "def render(state):" in source
-    assert "def is_goal(state):" in source
-    assert "Public observation shape" in source
-    assert '"grid"' in source
-    assert '"legal_actions"' in source
-    assert '"state"' in source
-    assert '"levels_completed"' in source
-    assert '"win_levels"' in source
-    assert "action['action']" in source
-    assert "HYPOTHESES" not in source
-
-
-def test_backtest_missing_file_returns_actor_revision(tmp_path):
-    critic = Backtest(({"position": 0},), str(tmp_path))
-    store = TaskStore(str(tmp_path / "flow.db"))
-    try:
-        result = __import__("asyncio").run(FlowExecutor(store).run(critic))
-    finally:
-        store.close()
-    assert result.decision == "revise"
-    assert "world_model.py" in result.feedback
-
-
-def test_hypothesize_returns_world_model_file_snapshot(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    modeler = ScriptedLLM(["world_model.py saved"] * 10)
-
-    class PrewrittenHypothesize(Hypothesize):
-        def run(self):
-            inner = Path(self.workspace, "innerContext")
-            inner.mkdir(parents=True, exist_ok=True)
-            Path(inner, "world_model.py").write_text(WORLD_MODEL)
-            result = yield ActorCritic(
-                actor=self.agent,
-                critic=Backtest(self.timeline, str(inner)),
-                actor_prompt=self._prompt,
-                max_rounds=self.max_rounds,
-                names=("Modeler", "Backtest"),
-            )
-            return result.value
-
-    class Value(Task):
-        def __init__(self, value):
-            self.value = value
-
-        def run(self):
-            return self.value
-
-    result = PhysicsStrategy(
-        observe=lambda **_: Value({"position": 0, "legal_actions": (1,)}),
-        hypothesize=lambda timeline, hypotheses, evidence, workspace, **_: (
-            PrewrittenHypothesize(
-                Agent(modeler, {"role": "file-modeler"}),
-                timeline,
-                hypotheses,
-                evidence,
-                workspace,
-            )
-        ),
-        test=lambda **_: Value(None),
-        deliberate=lambda **_: Value(None),
-        execute=lambda **_: Value(None),
-        identity={"test": "world-model-file"},
-    ).run(run_dir=tmp_path / "run", max_cycles=1)
-
-    assert result.hypotheses == WORLD_MODEL
-    assert modeler.calls == 1
-    assert "position" not in str(modeler.messages[0])
-    assert "`timeline`" in str(modeler.messages[0])
-    db = ThreadsDB(tmp_path / "run" / ".egg" / "threads.sqlite")
-    try:
-        actor_id = next(
-            thread.thread_id for thread in list_threads(db) if thread.name == "Modeler"
+    committed = json.loads(Path("committed-plan.json").read_text())
+    assert committed["intents"]
+    assert (
+        __import__("subprocess")
+        .run(
+            ["git", "status", "--porcelain"], capture_output=True, text=True, check=True
         )
-        projection = load_thread_projection(db, actor_id)
-        prompt = next(
-            message.payload["content"]
-            for message in projection.messages
-            if message.payload.get("role") == "user"
-            and message.payload.get("eggopt_actor_critic_key")
-        )
-        repl_calls = [
-            message.payload
-            for message in projection.messages
-            if message.payload.get("role") == "user"
-            and message.payload.get("synthetic_user_tool_request")
-        ]
-        assert "position" not in prompt
-        assert "`timeline`" in prompt
-        assert len(repl_calls) == 1
-        assert all(
-            call["tool_calls"][0]["function"]["name"] == "python_repl"
-            for call in repl_calls
-        )
-        publish_code = repl_calls[0]["tool_calls"][0]["function"]["arguments"]
-        assert "position" in publish_code
-        assert "timeline" in publish_code
-    finally:
-        db.close()
-
-
-def test_deliberate_publishes_planner_data_without_prompt_dump(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    marker = "PLANNER_PAYLOAD_MUST_NOT_ENTER_PROMPT"
-    timeline = ({"position": marker, "legal_actions": (1,)},)
-    planner = ScriptedLLM(['{"intents":[{"action":1,"prediction":{"position":1}}]}'])
-
-    class Value(Task):
-        def __init__(self, value):
-            self.value = value
-
-        def run(self):
-            return self.value
-
-    result = PhysicsStrategy(
-        observe=lambda **_: Value(timeline[0]),
-        hypothesize=lambda **_: Value(WORLD_MODEL),
-        test=lambda **_: Value(None),
-        deliberate=lambda timeline, hypotheses, evidence, workspace, **_: Deliberate(
-            Agent(planner, {"role": "planner"}),
-            timeline,
-            hypotheses,
-            evidence,
-            workspace,
-        ),
-        execute=lambda **_: Value(None),
-        identity={"test": "planner-repl-data"},
-    ).run(run_dir=tmp_path / "run", max_actions=1, max_cycles=1)
-
-    assert result.actions == 1
-    assert marker not in str(planner.messages[0])
-    assert "`world_model_source`" in str(planner.messages[0])
-    db = ThreadsDB(tmp_path / "run" / ".egg" / "threads.sqlite")
-    try:
-        actor_id = next(
-            thread.thread_id for thread in list_threads(db) if thread.name == "Planner"
-        )
-        projection = load_thread_projection(db, actor_id)
-        prompt = next(
-            message.payload["content"]
-            for message in projection.messages
-            if message.payload.get("role") == "user"
-            and message.payload.get("eggopt_actor_critic_key")
-        )
-        repl_calls = [
-            message.payload
-            for message in projection.messages
-            if message.payload.get("role") == "user"
-            and message.payload.get("synthetic_user_tool_request")
-        ]
-        assert marker not in prompt
-        assert len(repl_calls) == 1
-        assert marker in repl_calls[0]["tool_calls"][0]["function"]["arguments"]
-        assert (
-            "world_model_source"
-            in repl_calls[0]["tool_calls"][0]["function"]["arguments"]
-        )
-        assert "def ground" in repl_calls[0]["tool_calls"][0]["function"]["arguments"]
-    finally:
-        db.close()
+        .stdout
+        == ""
+    )
 
 
 class FakeState:
@@ -442,12 +173,16 @@ class FakeEnv:
     def __init__(self):
         self.position = 0
         self.action_space = [FakeAction(1)]
+        self.resets = 0
+        self.steps = 0
 
     def reset(self):
+        self.resets += 1
         self.position = 0
         return FakeFrame(0)
 
     def step(self, _action, data=None):
+        self.steps += 1
         self.position += 1
         return FakeFrame(self.position)
 
@@ -460,109 +195,127 @@ class FakeAction:
     def __eq__(self, other):
         return getattr(other, "value", None) == self.value
 
+    def __hash__(self):
+        return hash(self.value)
 
-def test_offline_execute_replays_timeline_before_one_new_action(monkeypatch):
+
+def test_offline_session_reuses_live_env_and_replays_only_after_loss(monkeypatch):
     from arcagi3_physics import environment
 
-    monkeypatch.setattr(environment, "_environment", lambda *_: FakeEnv())
+    environments = []
+
+    def make(*_):
+        env = FakeEnv()
+        environments.append(env)
+        return env
+
+    monkeypatch.setattr(environment, "_environment", make)
     monkeypatch.setattr(
         environment,
         "_step",
         lambda env, _intent: environment.observation(env.step(None)),
     )
+    clear_live_sessions()
 
-    initial = Observe("fake", 0, ".").run()
+    initial = Initialize("fake", 0, ".").run()
     first = Execute("fake", 0, ".", (initial,), {"action": 1}).run()
     second = Execute("fake", 0, ".", (initial, first), {"action": 1}).run()
 
-    assert first["observation"]["grid"] == (((1,),),)
-    assert second["observation"]["grid"] == (((2,),),)
+    assert len(environments) == 1
+    assert environments[0].resets == 1
+    assert environments[0].steps == 2
+
+    clear_live_sessions()
+    third = Execute("fake", 0, ".", (initial, first, second), {"action": 1}).run()
+    assert len(environments) == 2
+    assert environments[1].resets == 1
+    assert environments[1].steps == 3  # two recovery replays plus one new action
+    assert third["next_state"]["grid"] == (((3,),),)
 
 
-def test_real_offline_arc_observe_and_one_replayed_action():
+class ScriptedLLM:
+    current_model_key = "test"
 
-    environments = Path("environment_files").resolve()
-    if not environments.exists():
-        pytest.skip("local ARC environment files are unavailable")
+    def set_model(self, key):
+        self.current_model_key = key
 
-    initial = Observe("ls20", 0, environments).run()
-    assert initial["legal_actions"]
-    intent = {"action": initial["legal_actions"][0], "prediction": initial}
-    transition = Execute("ls20", 0, environments, (initial,), intent).run()
-    assert transition["intent"] == intent
-    assert transition["observation"]["grid"]
+    def set_model_with_config(self, key, _config):
+        self.current_model_key = key
 
 
-def test_arc_physics_requires_file_editing_modeler(tmp_path):
-    agent = Agent(ScriptedLLM([]), {"role": "modeler"})
+def test_arc_composition_requires_actor_tools(tmp_path):
+    actor = Agent(ScriptedLLM(), {"role": "actor"})
     with pytest.raises(ValueError, match="auto-approve"):
         arc_physics(
             game="fake",
             seed=0,
             environments_dir=tmp_path,
-            modeler=agent,
-            planner=agent,
+            actor=actor,
         )
 
 
-def test_arc_physics_requires_repl_for_each_reasoning_role(tmp_path):
-    modeler = Agent(
-        ScriptedLLM([]),
-        {"role": "modeler"},
-        auto_approve_tools=True,
-        allowed_tools=frozenset({"bash"}),
-    )
-    planner = Agent(
-        ScriptedLLM([]),
-        {"role": "planner"},
-        auto_approve_tools=True,
-        allowed_tools=frozenset({"python_repl"}),
-    )
-    with pytest.raises(ValueError, match="modeler needs python_repl"):
-        arc_physics(
-            game="fake",
-            seed=0,
-            environments_dir=tmp_path,
-            modeler=modeler,
-            planner=planner,
-        )
-
-
-def test_offline_runner_defaults_to_ls20_seed_zero():
+def test_runner_and_prompt_defaults():
     arguments = build_parser().parse_args([])
-
     assert arguments.game == "ls20"
-    assert arguments.seed == 0
-    assert arguments.run_dir == Path("runs/physics-ls20-seed0")
-    assert arguments.modeler_model == "Pro: GPT-5.6 Sol max"
-    assert arguments.planner_model == "Pro: GPT-5.6 Sol max"
-    source = Path("arcagi3_physics/run.py").read_text()
-    assert 'allowed_tools=frozenset({"bash", "python_exec", "python_repl"})' in source
-    assert 'allowed_tools=frozenset({"python_repl"})' in source
+    assert arguments.actor_model == "Pro: GPT-5.6 Sol max"
+    assert arguments.max_plan_depth == 8
+    prompt = physics_actor_system_prompt(ARC_DOMAIN_PROMPT)
+    assert "Git repository" in prompt
+    assert "step_<suffix>" in prompt
+    assert "ARC-AGI-3" in prompt
 
 
-def test_run_script_fails_fast_when_aiohttp_is_missing(tmp_path):
-    import os
-    import subprocess
+def test_world_model_skeleton_documents_multiple_hypotheses(tmp_path):
+    source = ensure_world_model(tmp_path).read_text()
+    assert source == WORLD_MODEL_TEMPLATE
+    assert "step_<suffix>" in source
+    assert "reward_<suffix>" in source
+    assert "def step_1" in source
+    assert "def reward_1" in source
 
-    python = tmp_path / "python"
-    python.write_text("#!/bin/sh\nexit 1\n")
-    python.chmod(0o755)
-    result = subprocess.run(
-        ["bash", "runPhysics.sh", "--help"],
-        env={**os.environ, "PYTHON": str(python)},
-        capture_output=True,
-        text=True,
-        check=False,
+
+def test_trusted_critic_executes_experiment_through_first_branch(tmp_path, monkeypatch):
+    from arcagi3_physics import environment
+
+    monkeypatch.chdir(tmp_path)
+    repository = tmp_path / "critic"
+    repository.mkdir()
+    (repository / "world_model.py").write_text(DISAGREEING)
+    initial = {"position": 0, "legal_actions": [1]}
+    write_actor_files(repository, (initial,))
+    trusted = repository / ".trusted"
+    trusted.mkdir()
+    (trusted / "state.json").write_text(
+        json.dumps({"timeline": [initial], "actions": 0, "last_report": None})
     )
+    report = run_planner(DISAGREEING, (initial,), repository / "planning", max_depth=4)
+    experiment = next(
+        plan for plan in canonical_plans(report) if plan["purpose"] == "experiment"
+    )
+    (repository / "committed-plan.json").write_text(json.dumps(experiment))
 
-    assert result.returncode == 1
-    assert "Missing aiohttp" in result.stderr
+    env = FakeEnv()
+    monkeypatch.setattr(environment, "_environment", lambda *_: env)
 
+    def step(fake, _intent):
+        fake.position += 1
+        return {"position": fake.position, "legal_actions": [1]}
 
-def _freeze(value):
-    if isinstance(value, dict):
-        return tuple(sorted((key, _freeze(item)) for key, item in value.items()))
-    if isinstance(value, (list, tuple)):
-        return tuple(_freeze(item) for item in value)
-    return value
+    monkeypatch.setattr(environment, "_step", step)
+    clear_live_sessions()
+    environment._SESSIONS[environment._key("fake", 0, ".")] = env
+    store = TaskStore(str(tmp_path / "flow.db"))
+    try:
+        result = __import__("asyncio").run(
+            FlowExecutor(store).run(
+                ARCCritic("fake", 0, ".", workspace=str(repository), max_actions=10)
+            )
+        )
+    finally:
+        store.close()
+
+    assert result.decision == "revise"
+    state = json.loads((trusted / "state.json").read_text())
+    assert state["actions"] == 2
+    assert state["last_report"]["resolution"] == "models_discriminated"
+    assert state["last_report"]["compatible_models"] == ["a"]

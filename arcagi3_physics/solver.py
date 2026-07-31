@@ -2,10 +2,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from eggopt import Agent, PhysicsEffect, PhysicsStrategy
+from eggopt import Agent, PhysicsStrategy
 
-from .environment import Execute, Observe
-from .tasks import Deliberate, Hypothesize, Test
+from .tasks import ARCCritic, PrepareARC
+
+ARC_DOMAIN_PROMPT = """You are reverse engineering an ARC-AGI-3 game from public observations.
+A public state contains a 64x64 color-index grid, currently legal actions, visible
+game state, levels completed, and levels needed to win. Never inspect the real
+environment implementation or hidden state.
+
+In `world_model.py`, define one or more matching `step_<suffix>` and
+`reward_<suffix>` pairs. `step_*` must predict the complete next public state;
+`reward_*` is that model's inferred goal/utility. Use `backtest.py`, `plan.py`,
+and `commit.py` exactly as documented in `INSTRUCTIONS.md`.
+"""
 
 
 def arc_physics(
@@ -13,57 +23,33 @@ def arc_physics(
     game: str,
     seed: int,
     environments_dir: str | Path,
-    modeler: Agent,
-    planner: Agent,
+    actor: Agent,
+    max_depth: int = 8,
+    max_nodes: int = 10_000,
 ) -> PhysicsStrategy:
-    """Compose the generic PhysicsStrategy into an ARC-AGI-3 solver."""
+    """Compose Git-backed PhysicsStrategy with the ARC domain instruments."""
 
     environments_dir = str(Path(environments_dir).resolve())
-    if not modeler.auto_approve_tools:
-        raise ValueError("modeler must auto-approve tools to edit world_model.py")
-    if not ({"bash", "python_exec"} & set(modeler.allowed_tools)):
-        raise ValueError("modeler needs bash or python_exec to edit world_model.py")
-    for role, agent in (("modeler", modeler), ("planner", planner)):
-        if "python_repl" not in agent.allowed_tools:
-            raise ValueError(f"{role} needs python_repl to inspect ARC data")
-        if not agent.auto_approve_tools:
-            raise ValueError(f"{role} must auto-approve its python_repl tools")
-
-    def observe(*, thread_id, **_):
-        return PhysicsEffect(
-            Observe(game, seed, environments_dir),
-            thread_id,
-            "arc_observe",
-            {"game": game, "seed": seed},
-        )
-
-    def hypothesize(*, timeline, hypotheses, evidence, workspace, **_):
-        return Hypothesize(modeler, timeline, hypotheses, evidence, workspace)
-
-    def test(*, hypotheses, timeline, commitment, workspace, **_):
-        return Test(hypotheses, timeline, commitment, workspace)
-
-    def deliberate(*, timeline, hypotheses, evidence, workspace, **_):
-        return Deliberate(planner, timeline, hypotheses, evidence, workspace)
-
-    def execute(*, timeline, intent, thread_id, **_):
-        return PhysicsEffect(
-            Execute(game, seed, environments_dir, timeline, intent),
-            thread_id,
-            "arc_act_observe",
-            {"game": game, "seed": seed, "intent": intent},
-        )
-
+    if not actor.auto_approve_tools:
+        raise ValueError("ARC Physics Actor must auto-approve its tools")
+    if not {"bash", "python_exec"} <= set(actor.allowed_tools):
+        raise ValueError("ARC Physics Actor needs bash and python_exec")
     return PhysicsStrategy(
-        observe=observe,
-        hypothesize=hypothesize,
-        test=test,
-        deliberate=deliberate,
-        execute=execute,
+        actor=actor,
+        prepare=lambda **_: PrepareARC(game, seed, environments_dir),
+        critic=ARCCritic(
+            game,
+            seed,
+            environments_dir,
+            max_depth=max_depth,
+            max_nodes=max_nodes,
+        ),
         identity={
             "domain": "arc-agi-3",
-            "version": 1,
+            "version": 2,
             "game": game,
             "seed": seed,
+            "max_depth": max_depth,
+            "max_nodes": max_nodes,
         },
     )

@@ -37,12 +37,12 @@ args=(
   --seed "${ARC_SEED:-0}"
   --environments-dir "${ARC_ENVIRONMENTS_DIR:-$ROOT/environment_files}"
   --run-dir "${ARC_RUN_DIR:-$ROOT/runs/physics-ls20-seed0}"
-  --modeler-model "${ARC_MODELER_MODEL:-Pro: GPT-5.6 Sol max}"
-  --planner-model "${ARC_PLANNER_MODEL:-Pro: GPT-5.6 Sol max}"
+  --actor-model "${ARC_ACTOR_MODEL:-Pro: GPT-5.6 Sol max}"
   --max-actions "${ARC_MAX_ACTIONS:-50}"
   --max-cycles "${ARC_MAX_CYCLES:-100}"
-  --modeler-context-limit "${ARC_MODELER_CONTEXT_LIMIT:-0}"
-  --planner-context-limit "${ARC_PLANNER_CONTEXT_LIMIT:-0}"
+  --actor-context-limit "${ARC_ACTOR_CONTEXT_LIMIT:-0}"
+  --max-plan-depth "${ARC_MAX_PLAN_DEPTH:-8}"
+  --max-plan-nodes "${ARC_MAX_PLAN_NODES:-10000}"
 )
 if [[ $# -gt 0 ]]; then
   args+=("$@")
