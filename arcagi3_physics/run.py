@@ -55,6 +55,7 @@ def run(arguments: argparse.Namespace) -> Path:
         f"{(Path(arguments.run_dir) / 'workspace/innerContext').resolve()}"
     )
     print(f"Physics thread: {result.physics_thread_id}")
+    print(f"Review: ./reviewPhysics.sh --run-dir {Path(arguments.run_dir).resolve()}")
     return destination
 
 

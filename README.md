@@ -33,6 +33,23 @@ Run or resume:
 ./runPhysics.sh
 ```
 
+Review the current or completed run from the Critic's authoritative Git copy:
+
+```bash
+./reviewPhysics.sh
+```
+
+The terminal viewer starts at the latest public observation. Use left/right
+arrows (or `h`/`l`) to traverse the append-only Timeline, Home/End to jump, `r`
+to reload a run that is still progressing, and `q` to quit. Its header reports
+Actor/Critic turns and commits, real actions, durable evaluation reports, plan
+models, compatible models, and the latest trusted resolution. For logs or
+non-interactive inspection, print one frame with:
+
+```bash
+./reviewPhysics.sh --frame 0
+```
+
 Useful overrides:
 
 ```bash

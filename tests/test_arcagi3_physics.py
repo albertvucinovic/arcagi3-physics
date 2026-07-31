@@ -147,3 +147,122 @@ def test_real_offline_arc_initial_observation_when_available():
     initial = Initialize("ls20", 0, environments).run()
     assert initial["grid"]
     assert initial["legal_actions"]
+
+
+def test_reviewer_loads_critic_git_timeline_and_metadata(tmp_path):
+    import json
+    import subprocess
+
+    from eggthreads import (
+        ThreadsDB,
+        append_message,
+        create_child_thread,
+        create_root_thread,
+    )
+
+    from arcagi3_physics.review import frame, load_review, render
+
+    run = tmp_path / "run"
+    repository = run / "workspace" / "critic-repository"
+    repository.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(repository), "init", "-b", "main"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "user.name", "Physics"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "user.email", "physics@test"],
+        check=True,
+    )
+    initial = {
+        "grid": [[[0, 1], [2, 3]]],
+        "legal_actions": [1],
+        "state": "NOT_FINISHED",
+        "levels_completed": 0,
+        "win_levels": 1,
+    }
+    next_state = {
+        **initial,
+        "grid": [[[1, 1], [2, 3]]],
+    }
+    intent = {"action": 1, "prediction": {"a": next_state}}
+    timeline = [
+        initial,
+        {"state": initial, "action": intent, "next_state": next_state},
+    ]
+    report = {
+        "stage": "execution",
+        "resolution": "plan_exhausted",
+        "compatible_models": ["a"],
+        "committed_plan": {
+            "purpose": "goal",
+            "models": ["a"],
+            "intents": [intent],
+        },
+    }
+    trusted = repository / ".trusted"
+    (trusted / "evaluations").mkdir(parents=True)
+    (trusted / "state.json").write_text(
+        json.dumps({"timeline": timeline, "actions": 1, "last_report": report})
+    )
+    (trusted / "evaluations" / ("a" * 40 + ".json")).write_text(
+        json.dumps(
+            {
+                "backtest": {
+                    "models": {"a": {}},
+                    "surviving_models": ["a"],
+                },
+                "planning": {"plans": [{"purpose": "goal"}]},
+            }
+        )
+    )
+    subprocess.run(["git", "-C", str(repository), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-m", "Actor proposal"],
+        check=True,
+    )
+    (repository / "critic.txt").write_text("result")
+    subprocess.run(["git", "-C", str(repository), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-m", "[physics] trusted result"],
+        check=True,
+    )
+
+    db = ThreadsDB(run / ".egg" / "threads.sqlite")
+    db.init_schema()
+    physics = create_root_thread(db, name="Physics")
+    critic = create_child_thread(db, physics, name="Critic")
+    actor = create_child_thread(db, critic, name="Actor")
+    append_message(db, actor, "assistant", "proposal ready")
+    append_message(db, critic, "assistant", "reviewed")
+    db.close()
+
+    review = load_review(run)
+    assert review.transitions == 1
+    assert review.actor_turns == 1
+    assert review.critic_turns == 1
+    assert review.actor_commits == 1
+    assert review.critic_commits == 1
+    assert review.evaluation_reports == 1
+    assert review.evaluated_head == "a" * 40
+    assert review.model_count == 1
+    assert review.surviving_models == ("a",)
+    assert review.generated_plans == 1
+    assert frame(review, 1)["action"] == intent
+    output = render(review, 1, color=False)
+    assert "frame 1/1" in output
+    assert "Actor turns: 1" in output
+    assert "Critic turns: 1" in output
+    assert "resolution: plan_exhausted" in output
+    assert "models: 1" in output
+    assert "surviving: ('a',)" in output
+    assert "Arriving action:" in output
+
+
+def test_reviewer_defaults_to_configured_run():
+    from arcagi3_physics.review import _decode_key, build_parser
+
+    assert build_parser().parse_args([]).run_dir == Path("runs/physics-ls20-seed0")
+    assert _decode_key("\x1b[D") == "left"
+    assert _decode_key("\x1b[C") == "right"
+    assert _decode_key("\x1b[H") == "home"
+    assert _decode_key("\x1b[F") == "end"
