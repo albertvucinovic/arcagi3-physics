@@ -333,8 +333,6 @@ async def _run(arguments: argparse.Namespace) -> tuple[Path, int]:
                 max_concurrent_threads=arguments.max_parallel,
                 max_concurrent_llm_threads=arguments.max_parallel,
                 priority_mode="alphabetical",
-                api_timeout_sec=0,
-                tool_timeout_sec=0,
             ),
             models_path=models,
             all_models_path=all_models,

@@ -94,6 +94,11 @@ Useful overrides include `ARC_MAX_PARALLEL`, `ARC_MAX_ACTIONS`,
 `ARC_BENCHMARK_RUN_DIR`. `ARC_CRITIC_TIMEOUT` defaults to 300 seconds per trusted
 evaluator subprocess.
 
+The shared scheduler retains Eggthreads' normal defaults: a 600-second provider
+inactivity timeout and a 30-second tool-call timeout. The Critic evaluator timeout
+is an additional, independently configured boundary around submitted
+`world_model.py` code.
+
 Attach the Egg UI to the shared tree without starting another scheduler:
 
 ```bash
