@@ -15,7 +15,14 @@ Offline mode loads only local games from the ARC-AGI toolkit's
 from __future__ import annotations
 
 import argparse
+import contextlib
+import os
+import select
+import shutil
 import sys
+import termios
+import tty
+from dataclasses import dataclass
 from importlib import metadata
 from typing import Any, Iterable
 
@@ -72,39 +79,91 @@ except ModuleNotFoundError as exc:  # pragma: no cover - helpful CLI error
 
 
 SIMPLE_ACTION_ALIASES: dict[str, GameAction] = {
-    "1": GameAction.ACTION1,
     "w": GameAction.ACTION1,
     "up": GameAction.ACTION1,
     "action1": GameAction.ACTION1,
-    "2": GameAction.ACTION2,
     "s": GameAction.ACTION2,
     "down": GameAction.ACTION2,
     "action2": GameAction.ACTION2,
-    "3": GameAction.ACTION3,
     "a": GameAction.ACTION3,
     "left": GameAction.ACTION3,
     "action3": GameAction.ACTION3,
-    "4": GameAction.ACTION4,
     "d": GameAction.ACTION4,
     "right": GameAction.ACTION4,
     "action4": GameAction.ACTION4,
-    "5": GameAction.ACTION5,
     "space": GameAction.ACTION5,
     "f": GameAction.ACTION5,
     "enter": GameAction.ACTION5,
     "action5": GameAction.ACTION5,
-    "7": GameAction.ACTION7,
     "u": GameAction.ACTION7,
     "z": GameAction.ACTION7,
     "undo": GameAction.ACTION7,
     "action7": GameAction.ACTION7,
 }
 
-COMPLEX_ACTION_ALIASES = {"6", "click", "tap", "xy", "action6"}
+COMPLEX_ACTION_ALIASES = {"click", "tap", "xy", "action6"}
 RESET_ALIASES = {"r", "reset"}
 QUIT_ALIASES = {"q", "quit", "exit"}
 HELP_ALIASES = {"h", "help", "?"}
 ACTIONS_ALIASES = {"actions", "list-actions", "available"}
+
+# Immediate keys use a numpad layout. These are deliberately separate from
+# written command aliases: a bare key acts immediately, while a command typed
+# at the `arc>` prompt is parsed only after Enter.
+IMMEDIATE_ACTION_KEYS: dict[str, GameAction] = {
+    "8": GameAction.ACTION1,
+    "2": GameAction.ACTION2,
+    "4": GameAction.ACTION3,
+    "6": GameAction.ACTION4,
+    "5": GameAction.ACTION5,
+    "7": GameAction.ACTION7,
+}
+ARROW_ACTIONS: dict[str, GameAction] = {
+    "A": GameAction.ACTION1,
+    "B": GameAction.ACTION2,
+    "D": GameAction.ACTION3,
+    "C": GameAction.ACTION4,
+}
+KEYPAD_ESCAPE_ACTIONS: dict[str, GameAction] = {
+    "Ox": GameAction.ACTION1,  # keypad 8 in application keypad mode
+    "Or": GameAction.ACTION2,  # keypad 2
+    "Ot": GameAction.ACTION3,  # keypad 4
+    "Ov": GameAction.ACTION4,  # keypad 6
+    "Ou": GameAction.ACTION5,  # keypad 5
+    "Ow": GameAction.ACTION7,  # keypad 7
+}
+KEYPAD_RESET_ESCAPE_SEQUENCES = {"Op"}  # keypad 0
+
+ANSI_CLEAR_LINE = "\033[2K"
+ANSI_CURSOR_COLUMN_ONE = "\r"
+ANSI_ENABLE_MOUSE = "\033[?1000h\033[?1006h"
+ANSI_DISABLE_MOUSE = "\033[?1006l\033[?1000l"
+ANSI_SHOW_CURSOR = "\033[?25h"
+ANSI_ENABLE_APPLICATION_KEYPAD = "\033="
+ANSI_DISABLE_APPLICATION_KEYPAD = "\033>"
+ANSI_RESET_SCROLL_REGION = "\033[r"
+
+BOARD_TERMINAL_COLUMNS = 128
+BOARD_BOTTOM_ROW = 66
+STATUS_START_ROW = BOARD_BOTTOM_ROW + 1
+MIN_MOUSE_TERMINAL_ROWS = 70
+
+ActionRequest = tuple[GameAction, dict[str, int]]
+ParsedPlayerInput = ActionRequest | str | None
+
+
+@dataclass(frozen=True)
+class SubmittedCommand:
+    text: str
+
+
+def terminal_can_map_mouse() -> bool:
+    """Whether the toolkit's 128x66 terminal board fits without wrapping."""
+    terminal = shutil.get_terminal_size()
+    return (
+        terminal.columns >= BOARD_TERMINAL_COLUMNS
+        and terminal.lines >= MIN_MOUSE_TERMINAL_ROWS
+    )
 
 
 def make_arcade(environments_dir: str | None = None) -> Arcade:
@@ -153,22 +212,27 @@ def list_games(args: argparse.Namespace) -> int:
 
 def print_help() -> None:
     print(
-        "\nControls / commands:\n"
-        "  w/up/1        ACTION1\n"
-        "  s/down/2      ACTION2\n"
-        "  a/left/3      ACTION3\n"
-        "  d/right/4     ACTION4\n"
-        "  space/f/5     ACTION5\n"
-        "  click x y/6 x y  ACTION6 with coordinates in the 0-63 range\n"
-        "  u/undo/7      ACTION7\n"
-        "  actions       show currently available actions\n"
-        "  reset         reset this game\n"
-        "  help          show this help\n"
-        "  quit          exit\n"
+        "\nImmediate controls (no Enter):\n"
+        "  Up / numpad 8       ACTION1\n"
+        "  Down / numpad 2     ACTION2\n"
+        "  Left / numpad 4     ACTION3\n"
+        "  Right / numpad 6    ACTION4\n"
+        "  Numpad 5            ACTION5\n"
+        "  Mouse click         ACTION6 (needs a 128x70+ terminal)\n"
+        "  Numpad 7            ACTION7 / undo\n"
+        "  Numpad 0            reset\n"
+        "  Esc                  quit\n"
+        "\nWritten commands (type at `arc>` and press Enter):\n"
+        "  up/down/left/right  ACTION1..ACTION4\n"
+        "  space/f             ACTION5\n"
+        "  click x y           ACTION6 with coordinates in the 0-63 range\n"
+        "  undo                ACTION7\n"
+        "  actions             show currently available actions\n"
+        "  reset, help, quit   control the player\n"
     )
 
 
-def parse_player_command(command: str) -> tuple[GameAction, dict[str, int]] | str | None:
+def parse_player_command(command: str) -> ParsedPlayerInput:
     """Return (action, data), a control string, or None for invalid input."""
     parts = command.strip().lower().split()
     if not parts:
@@ -189,7 +253,7 @@ def parse_player_command(command: str) -> tuple[GameAction, dict[str, int]] | st
 
     if head in COMPLEX_ACTION_ALIASES:
         if len(parts) != 3:
-            print("ACTION6 needs coordinates: `click <x> <y>` or `6 <x> <y>`")
+            print("ACTION6 needs coordinates: `click <x> <y>`")
             return None
         try:
             x = int(parts[1])
@@ -204,6 +268,119 @@ def parse_player_command(command: str) -> tuple[GameAction, dict[str, int]] | st
 
     print(f"Unknown command: {command!r}. Type `help` for controls.")
     return None
+
+
+def redraw_prompt(buffer: str) -> None:
+    """Draw the editable command prompt without disturbing immediate controls."""
+    print(
+        f"{ANSI_CURSOR_COLUMN_ONE}{ANSI_CLEAR_LINE}arc> {buffer}",
+        end="",
+        flush=True,
+    )
+
+
+def read_escape_sequence(fd: int, timeout: float = 0.01) -> str:
+    """Read bytes following ESC that are already arriving from the terminal."""
+    sequence = ""
+    # A short initial wait distinguishes Esc from a key sequence. Use a longer
+    # grace period than subsequent bytes so arrows remain reliable over SSH.
+    next_timeout = 0.1
+    while len(sequence) < 31:
+        ready, _, _ = select.select([fd], [], [], next_timeout)
+        if not ready:
+            break
+        char = os.read(fd, 1).decode("utf-8", errors="ignore")
+        sequence += char
+        # CSI key sequences normally end in a letter or `~`; SS3 sequences
+        # (arrows/application keypad) begin with O and need one more byte.
+        # SGR mouse sequences begin with [< and end in M/m.
+        if sequence.startswith("[<") and char in {"M", "m"}:
+            break
+        if sequence.startswith("[") and not sequence.startswith("[<") and (
+            char.isalpha() or char == "~"
+        ):
+            break
+        if sequence.startswith("O") and len(sequence) >= 2:
+            break
+        if sequence[0] not in {"[", "O"}:
+            break
+        next_timeout = timeout
+    return sequence
+
+
+def mouse_action(sequence: str) -> ActionRequest | None:
+    """Translate an SGR terminal click over the rendered board to ACTION6."""
+    if not sequence.startswith("[<") or not sequence.endswith("M"):
+        return None
+
+    try:
+        button_text, column_text, row_text = sequence[2:-1].split(";")
+        button = int(button_text)
+        column = int(column_text)
+        row = int(row_text)
+    except (ValueError, TypeError):
+        return None
+
+    # SGR encodes modifiers in bits 2-4, motion in bit 5, and wheel events in
+    # bits 6-7. Accept only an unmodified primary-button press.
+    if button != 0:
+        return None
+
+    if not terminal_can_map_mouse():
+        return None
+
+    # arc_agi.rendering.render_frames_terminal starts the 64x64 board after:
+    #   row 1: "Step: ..."
+    #   row 2: blank
+    # and renders each game pixel as two terminal columns ("██").
+    x = (column - 1) // 2
+    y = row - 3
+    if 0 <= x <= 63 and 0 <= y <= 63:
+        return GameAction.ACTION6, {"x": x, "y": y}
+    return None
+
+
+@contextlib.contextmanager
+def interactive_terminal() -> Iterable[int]:
+    """Enter character-at-a-time mode and restore the terminal on every exit."""
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise RuntimeError("Interactive play requires a terminal (TTY).")
+
+    fd = sys.stdin.fileno()
+    original_attributes = termios.tcgetattr(fd)
+    mouse_enabled = terminal_can_map_mouse()
+    terminal_lines = shutil.get_terminal_size().lines
+    try:
+        tty.setcbreak(fd)
+        # cbreak normally keeps ISIG enabled, which would suspend the process
+        # for Ctrl+Z. Deliver control keys as bytes and handle them above.
+        interactive_attributes = termios.tcgetattr(fd)
+        interactive_attributes[3] &= ~termios.ISIG
+        termios.tcsetattr(fd, termios.TCSANOW, interactive_attributes)
+        setup = ANSI_ENABLE_APPLICATION_KEYPAD
+        if mouse_enabled:
+            # Keep rendering fixed in rows 1-66 while help, errors, and the
+            # command prompt scroll only in the status area below the board.
+            setup += f"\033[{STATUS_START_ROW};{terminal_lines}r{ANSI_ENABLE_MOUSE}"
+        print(setup, end="", flush=True)
+        yield fd
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, original_attributes)
+        print(
+            f"{ANSI_DISABLE_MOUSE}{ANSI_RESET_SCROLL_REGION}"
+            f"{ANSI_DISABLE_APPLICATION_KEYPAD}{ANSI_SHOW_CURSOR}"
+            f"{ANSI_CURSOR_COLUMN_ONE}{ANSI_CLEAR_LINE}",
+            end="",
+            flush=True,
+        )
+
+
+def rerender_current_observation(env: Any) -> None:
+    """Re-anchor the current board after terminal interaction is configured."""
+    renderer = getattr(env, "renderer", None)
+    observation = env.observation_space
+    if renderer is not None and observation is not None and observation.frame:
+        renderer(getattr(env, "_steps", 0), observation)
 
 
 def is_valid_action(env: Any, action: GameAction) -> bool:
@@ -228,59 +405,160 @@ def print_state(obs: Any) -> None:
         print(" | ".join(bits))
 
 
+def submit_action(env: Any, action: GameAction, data: dict[str, int]) -> Any:
+    """Validate and submit one action, reporting the resulting state."""
+    if not is_valid_action(env, action):
+        print(f"{action.name} is not currently available.")
+        print(f"Available actions: {action_names(env.action_space)}")
+        return None
+
+    obs = env.step(action, data=data)
+    print_state(obs)
+    print(f"Available actions: {action_names(env.action_space)}")
+
+    state = getattr(obs, "state", None) if obs is not None else None
+    if state == GameState.WIN:
+        print("Game won! Press numpad 0 to reset or Esc to quit.")
+    elif state == GameState.GAME_OVER:
+        print("Game over. Press numpad 0 to reset or Esc to quit.")
+    return obs
+
+
+def execute_player_input(env: Any, parsed: ParsedPlayerInput) -> bool:
+    """Execute parsed player input; return False when the player wants to quit."""
+    if parsed is None:
+        return True
+    if parsed == "quit":
+        return False
+    if parsed == "help":
+        print_help()
+        return True
+    if parsed == "actions":
+        print(f"Available actions: {action_names(env.action_space)}")
+        return True
+    if parsed == "reset":
+        obs = env.reset()
+        print_state(obs)
+        print(f"Available actions: {action_names(env.action_space)}")
+        return True
+
+    action, data = parsed
+    submit_action(env, action, data)
+    return True
+
+
+def read_player_input(
+    fd: int, buffer: str
+) -> tuple[ParsedPlayerInput | SubmittedCommand, str, bool]:
+    """Read one terminal event.
+
+    Returns (parsed_input, command_buffer, buffer_changed). parsed_input is None
+    when the event only edits the written command buffer.
+    """
+    char = os.read(fd, 1).decode("utf-8", errors="ignore")
+
+    if char == "\x03":
+        raise KeyboardInterrupt
+    if char == "\x04" and not buffer:
+        return "quit", buffer, False
+    if char == "\x1a":
+        return (GameAction.ACTION7, {}), buffer, False
+    if char == "\x1b":
+        sequence = read_escape_sequence(fd)
+        if not sequence:
+            return "quit", buffer, False
+        if sequence[:1] in {"[", "O"} and sequence[-1:] in ARROW_ACTIONS:
+            return (ARROW_ACTIONS[sequence[-1]], {}), buffer, False
+        keypad_action = KEYPAD_ESCAPE_ACTIONS.get(sequence)
+        if keypad_action is not None:
+            return (keypad_action, {}), buffer, False
+        if sequence in KEYPAD_RESET_ESCAPE_SEQUENCES:
+            return "reset", buffer, False
+        click = mouse_action(sequence)
+        if click is not None:
+            return click, buffer, False
+        return None, buffer, False
+    if char in {"\r", "\n"}:
+        return SubmittedCommand(buffer.strip()), "", True
+    if char in {"\x7f", "\b"}:
+        return None, buffer[:-1], True
+
+    # A lone numpad-style key is immediate only when no written command is in
+    # progress. Once text exists, digits remain available to future commands.
+    if not buffer:
+        if char == "0":
+            return "reset", buffer, False
+        action = IMMEDIATE_ACTION_KEYS.get(char)
+        if action is not None:
+            return (action, {}), buffer, False
+
+    if char.isprintable():
+        return None, buffer + char, True
+    return None, buffer, False
+
+
 def play_game(args: argparse.Namespace) -> int:
     arc = make_arcade(args.environments_dir)
     render_mode = "terminal-fast" if args.fast else "terminal"
     env = arc.make(args.game_handle, seed=args.seed, render_mode=render_mode)
 
     if env is None:
-        print(f"Could not create offline environment for game handle: {args.game_handle}", file=sys.stderr)
+        print(
+            f"Could not create offline environment for game handle: {args.game_handle}",
+            file=sys.stderr,
+        )
         return 1
 
-    print(f"Playing {args.game_handle!r} in offline mode. Type `help` for controls.")
-    print(f"Available actions: {action_names(env.action_space)}")
-
-    while True:
-        try:
-            command = input("arc> ")
-        except (EOFError, KeyboardInterrupt):
-            print("\nbye")
-            return 0
-
-        parsed = parse_player_command(command)
-        if parsed is None:
-            continue
-
-        if parsed == "quit":
-            print("bye")
-            return 0
-        if parsed == "help":
-            print_help()
-            continue
-        if parsed == "actions":
+    try:
+        with interactive_terminal() as fd:
+            rerender_current_observation(env)
+            print(
+                f"Playing {args.game_handle!r} offline. "
+                "Keys: arrows/8/2/4/6, 5, 7, 0; Esc quits."
+            )
+            if not terminal_can_map_mouse():
+                print(
+                    "Mouse ACTION6 needs a 128x70+ terminal; "
+                    "use the written command `click x y`."
+                )
             print(f"Available actions: {action_names(env.action_space)}")
-            continue
-        if parsed == "reset":
-            obs = env.reset()
-            print_state(obs)
-            print(f"Available actions: {action_names(env.action_space)}")
-            continue
+            buffer = ""
+            redraw_prompt(buffer)
+            while True:
+                event, buffer, buffer_changed = read_player_input(fd, buffer)
+                if isinstance(event, SubmittedCommand):
+                    # Finish the visible command line before parsing. Parser
+                    # errors can then be printed cleanly beneath the prompt.
+                    print()
+                    parsed = (
+                        parse_player_command(event.text) if event.text else None
+                    )
+                    if parsed is None:
+                        redraw_prompt(buffer)
+                        continue
+                else:
+                    parsed = event
 
-        action, data = parsed
-        if not is_valid_action(env, action):
-            print(f"{action.name} is not currently available.")
-            print(f"Available actions: {action_names(env.action_space)}")
-            continue
+                if parsed is None:
+                    if buffer_changed:
+                        redraw_prompt(buffer)
+                    continue
 
-        obs = env.step(action, data=data)
-        print_state(obs)
-        print(f"Available actions: {action_names(env.action_space)}")
+                # Immediate keys leave the cursor on the `arc>` line. Written
+                # commands have already completed that line above.
+                if not isinstance(event, SubmittedCommand):
+                    print()
+                if not execute_player_input(env, parsed):
+                    break
+                redraw_prompt(buffer)
+    except (EOFError, KeyboardInterrupt):
+        pass
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
-        state = getattr(obs, "state", None) if obs is not None else None
-        if state == GameState.WIN:
-            print("Game won! You can `reset` or `quit`.")
-        elif state == GameState.GAME_OVER:
-            print("Game over. Type `reset` to restart or `quit` to exit.")
+    print("bye")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -38,10 +38,10 @@ args=(
   --environments-dir "${ARC_ENVIRONMENTS_DIR:-$ROOT/environment_files}"
   --run-dir "${ARC_RUN_DIR:-$ROOT/runs/physics-ls20-seed0}"
   --actor-model "${ARC_ACTOR_MODEL:-Pro: GPT-5.6 Sol max}"
-  --max-actions "${ARC_MAX_ACTIONS:-50}"
+  --max-actions "${ARC_MAX_ACTIONS:-500}"
   --max-cycles "${ARC_MAX_CYCLES:-100}"
   --actor-context-limit "${ARC_ACTOR_CONTEXT_LIMIT:-0}"
-  --max-plan-depth "${ARC_MAX_PLAN_DEPTH:-8}"
+  --max-plan-depth "${ARC_MAX_PLAN_DEPTH:-12}"
   --max-plan-nodes "${ARC_MAX_PLAN_NODES:-10000}"
   --critic-timeout "${ARC_CRITIC_TIMEOUT:-300}"
 )
