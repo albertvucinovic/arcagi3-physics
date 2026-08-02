@@ -237,7 +237,9 @@ def test_runner_and_prompt_defaults():
     prompt = physics_actor_system_prompt(ARC_DOMAIN_PROMPT)
     assert "Git repository" in prompt
     assert "step_<suffix>" in prompt
-    assert "plan has no type and no branches" in prompt
+    assert "hypothesis you consider most likely" in prompt
+    assert "using as few real actions as possible" in prompt
+    assert "Undo is also a real action" in prompt
     assert "Planner suggestions are aids, not constraints" in prompt
     assert "need not have been found by `plan.py`" in prompt
     assert "optional `reward_<suffix>" in prompt

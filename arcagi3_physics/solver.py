@@ -23,6 +23,14 @@ public visual evidence. Never submit a bare action identifier.
 In `world_model.py`, define `step_<suffix>` hypotheses. You may additionally
 define `reward_<suffix>` for any hypothesis you want the advisory planner to
 search. Use the Physics instruments documented in `INSTRUCTIONS.md`.
+
+Complete all required game levels using as few real actions as possible:
+
+- do not waste actions on unnecessary experimentation;
+- prefer direct completion when confidence is adequate;
+- when uncertainty blocks progress, seek high-information experiments with
+  short prefixes;
+- remember that Undo is also a real action, not free planning.
 """
 
 
