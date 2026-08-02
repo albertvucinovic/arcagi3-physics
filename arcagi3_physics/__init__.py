@@ -7,7 +7,7 @@ from .environment import (
     observation,
     validate_action,
 )
-from .solver import ARC_DOMAIN_PROMPT, arc_goal, arc_physics
+from .solver import ARC_DOMAIN_PROMPT, arc_goal, arc_physics, arc_terminal_outcome
 
 __all__ = [
     "ARC_DOMAIN_PROMPT",
@@ -15,6 +15,7 @@ __all__ = [
     "Initialize",
     "arc_goal",
     "arc_physics",
+    "arc_terminal_outcome",
     "clear_live_sessions",
     "observation",
     "validate_action",

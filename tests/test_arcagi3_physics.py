@@ -14,7 +14,12 @@ from arcagi3_physics.environment import (
     validate_action,
 )
 from arcagi3_physics.run import build_parser
-from arcagi3_physics.solver import ARC_DOMAIN_PROMPT, arc_goal, arc_physics
+from arcagi3_physics.solver import (
+    ARC_DOMAIN_PROMPT,
+    arc_goal,
+    arc_physics,
+    arc_terminal_outcome,
+)
 
 ANSI = re.compile(r"\033\[[0-?]*[ -/]*[@-~]")
 
@@ -134,9 +139,7 @@ def test_offline_session_reuses_live_env_and_replays_only_after_loss(monkeypatch
 def test_step_executes_a_parameterized_click_intent(monkeypatch):
     from arcagi3_physics import environment
 
-    monkeypatch.setattr(
-        "arcengine.GameAction.from_id", lambda action: ComplexAction()
-    )
+    monkeypatch.setattr("arcengine.GameAction.from_id", lambda action: ComplexAction())
     monkeypatch.setattr(ComplexAction, "is_complex", lambda _self: True, raising=False)
     monkeypatch.setattr(
         ComplexAction,
@@ -163,17 +166,13 @@ def test_step_executes_a_parameterized_click_intent(monkeypatch):
     with pytest.raises(ValueError, match="requires integer click coordinates"):
         environment._step(env, {"action": 6})
     with pytest.raises(ValueError, match="requires integer click coordinates"):
-        environment._step(
-            env, {"action": 6, "data": {"x": -1, "y": 2}}
-        )
+        environment._step(env, {"action": 6, "data": {"x": -1, "y": 2}})
 
 
 def test_domain_validates_unified_arc_action_objects():
     current = {"legal_actions": [1, 6]}
     assert validate_action(current, {"action": 1}) is None
-    assert validate_action(
-        current, {"action": 6, "data": {"x": 12, "y": 34}}
-    ) is None
+    assert validate_action(current, {"action": 6, "data": {"x": 12, "y": 34}}) is None
     with pytest.raises(ValueError, match="must be objects"):
         validate_action(current, 1)
     with pytest.raises(ValueError, match="must be objects"):
@@ -188,10 +187,35 @@ def test_domain_validates_unified_arc_action_objects():
 
 def test_arc_goal_uses_trusted_public_completion_fields():
     assert arc_goal({"state": "WIN", "levels_completed": 0, "win_levels": 1})
-    assert arc_goal({"state": "NOT_FINISHED", "levels_completed": 2, "win_levels": 2})
+    assert not arc_goal(
+        {"state": "NOT_FINISHED", "levels_completed": 2, "win_levels": 2}
+    )
     assert not arc_goal(
         {"state": "NOT_FINISHED", "levels_completed": 1, "win_levels": 2}
     )
+
+
+def test_arc_terminal_outcome_uses_public_engine_state_and_actions():
+    assert (
+        arc_terminal_outcome({"state": "GAME_OVER", "legal_actions": [1]}).reason
+        == "game_over"
+    )
+    assert (
+        arc_terminal_outcome({"state": "NOT_FINISHED", "legal_actions": []}).reason
+        == "no_legal_actions"
+    )
+    assert (
+        arc_terminal_outcome(
+            {
+                "state": "WIN",
+                "legal_actions": [],
+                "levels_completed": 1,
+                "win_levels": 1,
+            }
+        )
+        is None
+    )
+    assert arc_terminal_outcome({"state": "NOT_FINISHED", "legal_actions": [1]}) is None
 
 
 class ScriptedLLM:
@@ -222,6 +246,7 @@ def test_arc_composition_is_thin_and_requires_actor_tools(tmp_path):
     assert {"action": 1} in strategy.planner_actions
     assert strategy.validate_action is validate_action
     assert strategy.is_goal({"state": "WIN"})
+    assert strategy.terminal_outcome({"state": "GAME_OVER"}).reason == "game_over"
 
 
 def test_runner_and_prompt_defaults():
@@ -239,10 +264,13 @@ def test_runner_and_prompt_defaults():
     assert "step_<suffix>" in prompt
     assert "hypothesis you consider most likely" in prompt
     assert "using as few real actions as possible" in prompt
+    assert "pass every required level" in prompt
+    assert "reach the public `WIN` state" in prompt
+    assert "matching `reward_<suffix>`" in prompt
+    assert "Run `python plan.py`" in prompt
     assert "Undo is also a real action" in prompt
     assert "Planner suggestions are aids, not constraints" in prompt
     assert "need not have been found by `plan.py`" in prompt
-    assert "optional `reward_<suffix>" in prompt
     assert "ARC-AGI-3" in prompt
     assert "Action 6 is a mouse" in ARC_DOMAIN_PROMPT
     assert '{"action": 1}' in ARC_DOMAIN_PROMPT
@@ -533,8 +561,12 @@ def test_luna_benchmark_defaults_and_single_game_selection():
     scheduler = RunnerConfig(
         max_concurrent_threads=arguments.max_parallel,
         max_concurrent_llm_threads=arguments.max_parallel,
+        sticky_scheduling=True,
+        sticky_idle_threshold_sec=5,
     )
     assert scheduler.effective_max_concurrent_llm_threads == 3
+    assert scheduler.sticky_scheduling is True
+    assert scheduler.sticky_idle_threshold_sec == 5
     environments = Path("environment_files")
     if environments.is_dir():
         assert len(discover_public_environments(environments)) == 25
@@ -724,6 +756,11 @@ def test_completed_environment_result_skips_reexecution(tmp_path):
     assert result.status == "completed"
     assert result.actions == 7
     assert result.stopping_reason == "won"
+
+    value["stopping_reason"] = "game_over"
+    terminal = _completed_result("aa00", run_dir, "thread-aa00", value)
+    assert terminal.status == "terminal"
+    assert terminal.stopping_reason == "game_over"
 
 
 def test_interrupted_summary_recovers_durable_environment_status(tmp_path):

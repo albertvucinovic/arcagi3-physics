@@ -239,7 +239,7 @@ class _RunEnvironment(Task):
         _write_json(destination, asdict(result))
         summary = EnvironmentResult(
             game=self.game,
-            status="completed",
+            status="completed" if result.goal_reached else "terminal",
             run_dir=str(run_dir),
             physics_thread_id=self.physics_thread_id,
             result_path=str(destination),
@@ -332,6 +332,8 @@ async def _run(arguments: argparse.Namespace) -> tuple[Path, int]:
             config=RunnerConfig(
                 max_concurrent_threads=arguments.max_parallel,
                 max_concurrent_llm_threads=arguments.max_parallel,
+                sticky_scheduling=False,
+                sticky_idle_threshold_sec=5,
                 priority_mode="alphabetical",
             ),
             models_path=models,
@@ -674,13 +676,14 @@ def _completed_result(game, run_dir, thread_id, value):
         actions = (
             max(0, len(timeline) - 1) if isinstance(timeline, (list, tuple)) else 0
         )
+    stopping_reason = _required_string(value, "stopping_reason")
     result = EnvironmentResult(
         game=game,
-        status="completed",
+        status="completed" if stopping_reason == "won" else "terminal",
         run_dir=str(run_dir),
         physics_thread_id=thread_id,
         result_path=str(run_dir / "result.json"),
-        stopping_reason=_required_string(value, "stopping_reason"),
+        stopping_reason=stopping_reason,
         actions=actions,
         rounds=int(value["rounds"]),
         head=value.get("head"),
