@@ -41,10 +41,12 @@ Review the current or completed run from the Critic's authoritative Git copy:
 
 The terminal viewer starts at the latest public observation. Use left/right
 arrows (or `h`/`l`) to traverse the append-only Timeline, Home/End to jump, `r`
-to reload a run that is still progressing, and `q` to quit. Its header reports
-Actor/Critic turns and commits, real actions, durable evaluation reports, plan
-models, compatible models, and the latest trusted resolution. For logs or
-non-interactive inspection, print one frame with:
+to reload a run that is still progressing, and `q` to quit. Its textual stats
+follow the selected action rather than always describing the latest report. They
+identify the Actor turn that produced the action, that turn's proposed and
+executed plan lengths, the action's position within the executed prefix and its
+prediction result, plus historical Actor/Critic, evaluation, and model totals as
+of that action. For logs or non-interactive inspection, print one frame with:
 
 ```bash
 ./reviewPhysics.sh --frame 0

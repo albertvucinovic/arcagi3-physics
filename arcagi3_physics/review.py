@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import contextlib
+import datetime as dt
 import json
 import os
 import shutil
@@ -9,7 +11,7 @@ import subprocess
 import sys
 import termios
 import tty
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
@@ -29,11 +31,44 @@ _RESET = "\033[0m"
 _DEFAULT_COLUMNS = 80
 _DEFAULT_LINES = 24
 _MIN_COLUMNS = 20
+_PHYSICS_PREFIX = "[physics]"
+_ACTOR_CRITIC_TURN_KEY = "eggopt.actor-critic.turn."
 
 # ARC-AGI-3's canonical palette.  Foreground and background colors let one
 # terminal cell represent two vertical game pixels without distorting the
 # square 64x64 image.
 _PALETTE = tuple(hex_to_rgb(COLOR_MAP[index]) for index in range(16))
+
+
+@dataclass(frozen=True)
+class TurnStats:
+    actor_turn: int
+    actor_head: str | None
+    critic_head: str
+    action_start: int
+    action_end: int
+    proposed_actions: int
+    executed_actions: int
+    stage: str
+    resolution: str
+    evaluation_report: bool
+    evaluated_head: str | None
+    model_count: int
+    surviving_models: tuple[str, ...]
+    matching_models: tuple[str, ...]
+    generated_plans: int
+    actor_commits: int
+    critic_commits: int
+    prediction_matches: tuple[bool | None, ...] = ()
+    action_matching_models: tuple[tuple[str, ...] | None, ...] = ()
+
+    @property
+    def action_range(self) -> str:
+        if self.executed_actions == 0:
+            return "none"
+        if self.action_start == self.action_end:
+            return str(self.action_start)
+        return f"{self.action_start}-{self.action_end}"
 
 
 @dataclass(frozen=True)
@@ -51,10 +86,28 @@ class Review:
     model_count: int
     surviving_models: tuple[str, ...]
     generated_plans: int
+    turns: tuple[TurnStats, ...] = ()
+    initial_head: str | None = None
+    initial_actor_commits: int = 0
+    initial_critic_commits: int = 0
 
     @property
     def transitions(self) -> int:
         return max(0, len(self.timeline) - 1)
+
+
+@dataclass(frozen=True)
+class _Commit:
+    head: str
+    subject: str
+    timestamp: int
+
+
+@dataclass(frozen=True)
+class _ThreadActivity:
+    actor_turns: int = 0
+    critic_turns: int = 0
+    actor_turn_started_at: tuple[float, ...] = ()
 
 
 def load_review(run_dir: str | Path) -> Review:
@@ -72,16 +125,22 @@ def load_review(run_dir: str | Path) -> Review:
     report = state.get("last_report") or {}
     if not isinstance(report, dict):
         report = {}
-    heads = _commit_subjects(repository, head)
-    actor_commits = sum(not subject.startswith("[physics]") for subject in heads)
+    commits = _commits(repository, head)
+    heads = tuple(commit.subject for commit in commits)
+    actor_commits = sum(not subject.startswith(_PHYSICS_PREFIX) for subject in heads)
     critic_commits = len(heads) - actor_commits
-    actor_turns, critic_turns = _thread_turns(
+    activity = _thread_activity(
         run / ".egg" / "threads.sqlite", run_dir=run
     )
-    if actor_turns == 0:
-        actor_turns = actor_commits
-    if critic_turns == 0:
-        critic_turns = critic_commits
+    turns = _turn_stats(repository, commits, activity.actor_turn_started_at)
+    recorded_actor_turns = max((turn.actor_turn for turn in turns), default=0)
+    actor_turns = max(
+        activity.actor_turns,
+        recorded_actor_turns,
+        actor_commits if not turns else 0,
+    )
+    critic_turns = max(activity.critic_turns, recorded_actor_turns, len(turns))
+    initial_actor_commits, initial_critic_commits = _initial_commit_counts(commits)
     evaluation_heads = _evaluation_heads(repository, head)
     evaluated_head, evaluation = _latest_evaluation(
         repository, head, evaluation_heads, report
@@ -109,6 +168,10 @@ def load_review(run_dir: str | Path) -> Review:
         model_count=len(models) if isinstance(models, dict) else 0,
         surviving_models=surviving,
         generated_plans=len(suggestions) if isinstance(suggestions, list) else 0,
+        turns=turns,
+        initial_head=commits[0].head if commits else None,
+        initial_actor_commits=initial_actor_commits,
+        initial_critic_commits=initial_critic_commits,
     )
 
 
@@ -125,7 +188,14 @@ def frame(review: Review, index: int) -> dict[str, Any]:
         action = transition.get("action")
     if not isinstance(state, dict):
         raise TypeError("ARC Timeline state must be a mapping")
-    return {"index": index, "state": state, "action": action, "transition": transition}
+    turn = _turn_for_action(review.turns, index) if index else None
+    return {
+        "index": index,
+        "state": state,
+        "action": action,
+        "transition": transition,
+        "turn": turn,
+    }
 
 
 def render(
@@ -139,30 +209,49 @@ def render(
     item = frame(review, index)
     state = item["state"]
     grid = _visible_grid(state.get("grid"))
-    report = review.report
-    plan = report.get("plan") if isinstance(report, dict) else None
-    models = report.get("matching_models", ()) if isinstance(report, dict) else ()
+    turn = item["turn"]
+    historical = turn is not None
+    actor_turn = turn.actor_turn if historical else 0
+    critic_turn = min(actor_turn, review.critic_turns) if historical else 0
+    actor_commits = turn.actor_commits if historical else review.initial_actor_commits
+    critic_commits = (
+        turn.critic_commits if historical else review.initial_critic_commits
+    )
+    evaluation_reports = sum(
+        candidate.evaluation_report
+        for candidate in review.turns
+        if turn is not None and candidate.actor_turn <= turn.actor_turn
+    )
+    evaluated_head = turn.evaluated_head if historical else None
+    model_count = turn.model_count if historical else 0
+    surviving_models = turn.surviving_models if historical else ()
+    generated_plans = turn.generated_plans if historical else 0
+    stage = turn.stage if historical else "-"
+    resolution = turn.resolution if historical else "-"
+    selected_head = turn.critic_head if historical else review.initial_head
     terminal_columns, terminal_lines = _terminal_viewport()
     width = max(_MIN_COLUMNS, columns or terminal_columns)
     height = lines or terminal_lines
     metadata = [
         (
-            f"ARC Physics review  frame {index}/{review.transitions}  "
-            f"HEAD {review.head[:12]}"
+            f"ARC Physics review  action {index}/{review.transitions}  "
+            f"Critic HEAD {(selected_head or '-')[:12]}  latest {review.head[:12]}"
         ),
         (
-            f"Actor turns: {review.actor_turns}  Critic turns: {review.critic_turns}  "
-            f"Actor commits: {review.actor_commits}  Critic commits: {review.critic_commits}"
+            f"Through action: Actor turns: {actor_turn}/{review.actor_turns}  "
+            f"Critic turns: {critic_turn}/{review.critic_turns}  "
+            f"Actor commits {actor_commits}/{review.actor_commits}  "
+            f"Critic commits {critic_commits}/{review.critic_commits}"
         ),
         (
-            f"Real actions: {review.transitions}  Evaluation reports: "
-            f"{review.evaluation_reports}  Report stage: {report.get('stage', '-')}  "
-            f"resolution: {report.get('resolution', '-')}"
+            f"Real actions: {index}/{review.transitions}  Evaluation reports: "
+            f"{evaluation_reports}/{review.evaluation_reports}  Report stage: {stage}  "
+            f"resolution: {resolution}"
         ),
         (
-            f"Evaluated Actor HEAD: {(review.evaluated_head or '-')[:12]}  "
-            f"models: {review.model_count}  surviving: {review.surviving_models}  "
-            f"planner suggestions: {review.generated_plans}"
+            f"Evaluated Actor HEAD: {(evaluated_head or '-')[:12]}  "
+            f"models: {model_count}  surviving: {surviving_models}  "
+            f"planner suggestions: {generated_plans}"
         ),
         (
             f"Game state: {state.get('state', '-')}  levels: "
@@ -170,17 +259,14 @@ def render(
             f"legal: {state.get('legal_actions', ())}"
         ),
         (
-            "Arriving action: "
+            f"Action {index}/{review.transitions}: "
             + (
                 json.dumps(item["action"], sort_keys=True)
                 if item["action"]
                 else "initial observation"
             )
         ),
-        (
-            f"Submitted plan transitions: {len(plan) if isinstance(plan, list) else 0}  "
-            f"matching models: {models}"
-        ),
+        _turn_line(turn, index),
     ]
     footer = [
         "←/→ or h/l: previous/next   Home/End: first/latest   r: reload   q: quit",
@@ -267,6 +353,13 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _thread_turns(path: Path, *, run_dir: Path | None = None) -> tuple[int, int]:
+    activity = _thread_activity(path, run_dir=run_dir)
+    return activity.actor_turns, activity.critic_turns
+
+
+def _thread_activity(
+    path: Path, *, run_dir: Path | None = None
+) -> _ThreadActivity:
     run_dir = run_dir or path.parent.parent
     shared = False
     if not path.is_file():
@@ -281,10 +374,11 @@ def _thread_turns(path: Path, *, run_dir: Path | None = None) -> tuple[int, int]
         path = benchmark_path
         shared = path.is_file()
     if not path.is_file():
-        return 0, 0
+        return _ThreadActivity()
     db = ThreadsDB(path)
     try:
         actor = critic = 0
+        actor_turn_started_at = []
         for thread in list_threads(db):
             if thread.name not in {"Actor", "Critic"}:
                 continue
@@ -295,14 +389,28 @@ def _thread_turns(path: Path, *, run_dir: Path | None = None) -> tuple[int, int]
             ):
                 continue
             messages = load_thread_projection(db, thread.thread_id).messages
-            turns = sum(
+            turn_messages = [
+                message
+                for message in messages
+                if _is_actor_critic_turn(message.payload)
+            ]
+            turns = len(turn_messages) or sum(
                 message.payload.get("role") == "assistant" for message in messages
             )
             if thread.name == "Actor":
                 actor += turns
+                actor_turn_started_at.extend(
+                    timestamp
+                    for message in turn_messages
+                    if (timestamp := _timestamp(message.created_at)) is not None
+                )
             else:
                 critic += turns
-        return actor, critic
+        return _ThreadActivity(
+            actor_turns=actor,
+            critic_turns=critic,
+            actor_turn_started_at=tuple(sorted(actor_turn_started_at)),
+        )
     finally:
         db.close()
 
@@ -314,9 +422,297 @@ def _thread_working_directory(db: ThreadsDB, thread_id: str) -> Path | None:
         return None
 
 
-def _commit_subjects(repository: Path, head: str) -> tuple[str, ...]:
-    output = _git(repository, "log", "--format=%s", head)
-    return tuple(line for line in output.splitlines() if line)
+def _commits(repository: Path, head: str) -> tuple[_Commit, ...]:
+    output = _git(
+        repository,
+        "log",
+        "--reverse",
+        "--format=%H%x00%P%x00%s%x00%ct",
+        head,
+    )
+    commits = []
+    for line in output.splitlines():
+        commit, _parents, subject, timestamp = line.split("\0", 3)
+        commits.append(
+            _Commit(
+                head=commit,
+                subject=subject,
+                timestamp=int(timestamp),
+            )
+        )
+    return tuple(commits)
+
+
+def _initial_commit_counts(commits: tuple[_Commit, ...]) -> tuple[int, int]:
+    actor = critic = 0
+    for commit in commits:
+        if not commit.subject.startswith(_PHYSICS_PREFIX):
+            break
+        critic += 1
+    return actor, critic
+
+
+def _turn_stats(
+    repository: Path,
+    commits: tuple[_Commit, ...],
+    actor_turn_started_at: tuple[float, ...],
+) -> tuple[TurnStats, ...]:
+    turns = []
+    previous_actions = 0
+    actor_head = None
+    actor_commits = 0
+    critic_commits = 0
+    previous_report = None
+    has_previous_report = False
+    for commit in commits:
+        if not commit.subject.startswith(_PHYSICS_PREFIX):
+            actor_commits += 1
+            actor_head = commit.head
+            continue
+        critic_commits += 1
+        state = _optional_git_json(repository, commit.head, ".trusted/state.json")
+        if state is None:
+            continue
+        report = state.get("last_report")
+        if not isinstance(report, dict):
+            continue
+        current_actions = _nonnegative_int(state.get("actions"), previous_actions)
+        if (
+            has_previous_report
+            and current_actions == previous_actions
+            and report == previous_report
+        ):
+            continue
+        executed = report.get("executed")
+        executed_actions = len(executed) if isinstance(executed, list) else 0
+        if executed_actions == 0:
+            executed_actions = max(0, current_actions - previous_actions)
+        action_end = current_actions
+        action_start = (
+            action_end - executed_actions + 1 if executed_actions else action_end + 1
+        )
+        actor_turn = max(
+            bisect.bisect_right(actor_turn_started_at, float(commit.timestamp)),
+            len(turns) + 1,
+        )
+        reported_head = _full_head(report.get("head"))
+        evaluated_head = None
+        evaluation = None
+        for candidate in (reported_head, actor_head):
+            if candidate is None:
+                continue
+            candidate_evaluation = _optional_git_json(
+                repository,
+                commit.head,
+                f".trusted/evaluations/{candidate}.json",
+            )
+            if candidate_evaluation is not None:
+                evaluated_head = candidate
+                evaluation = candidate_evaluation
+                break
+        if evaluation is None:
+            evaluation_heads = _evaluation_heads(repository, commit.head)
+            if evaluation_heads:
+                evaluated_head = evaluation_heads[-1]
+                evaluation = _optional_git_json(
+                    repository,
+                    commit.head,
+                    f".trusted/evaluations/{evaluated_head}.json",
+                )
+        if evaluated_head is None:
+            evaluated_head = reported_head
+        evaluation_report = evaluation is not None
+        evaluation_data = evaluation or {}
+        backtest = evaluation_data.get("backtest", {})
+        planning = evaluation_data.get("planning", {})
+        models = backtest.get("models", {}) if isinstance(backtest, dict) else {}
+        surviving = (
+            backtest.get("surviving_models", ())
+            if isinstance(backtest, dict)
+            else ()
+        )
+        suggestions = (
+            planning.get("suggestions", ()) if isinstance(planning, dict) else ()
+        )
+        plan = report.get("plan")
+        matching = report.get("matching_models", ())
+        turns.append(
+            TurnStats(
+                actor_turn=max(1, actor_turn),
+                actor_head=actor_head,
+                critic_head=commit.head,
+                action_start=action_start,
+                action_end=action_end,
+                proposed_actions=len(plan) if isinstance(plan, list) else 0,
+                executed_actions=executed_actions,
+                stage=str(report.get("stage") or "-"),
+                resolution=str(report.get("resolution") or "-"),
+                evaluation_report=evaluation_report,
+                evaluated_head=evaluated_head,
+                model_count=len(models) if isinstance(models, dict) else 0,
+                surviving_models=_strings(surviving),
+                matching_models=_strings(matching),
+                generated_plans=len(suggestions) if isinstance(suggestions, list) else 0,
+                actor_commits=actor_commits,
+                critic_commits=critic_commits,
+                prediction_matches=_prediction_matches(report, executed_actions),
+                action_matching_models=_action_matching_models(
+                    report, executed_actions
+                ),
+            )
+        )
+        previous_actions = max(previous_actions, current_actions)
+        previous_report = report
+        has_previous_report = True
+    return tuple(turns)
+
+
+def _turn_for_action(turns: tuple[TurnStats, ...], action: int) -> TurnStats | None:
+    return next(
+        (
+            turn
+            for turn in turns
+            if turn.executed_actions and turn.action_start <= action <= turn.action_end
+        ),
+        None,
+    )
+
+
+def _turn_line(turn: TurnStats | None, action: int) -> str:
+    if turn is None:
+        return "Actor turn: -  selected frame has no executed action"
+    within_turn = action - turn.action_start + 1
+    prediction = (
+        turn.prediction_matches[within_turn - 1]
+        if within_turn <= len(turn.prediction_matches)
+        else None
+    )
+    prediction_text = {True: "matched", False: "mismatched", None: "unavailable"}[
+        prediction
+    ]
+    matching_models = (
+        turn.action_matching_models[within_turn - 1]
+        if within_turn <= len(turn.action_matching_models)
+        else None
+    )
+    if matching_models is None:
+        matching_models = (
+            turn.matching_models
+            if within_turn == turn.executed_actions
+            else "unavailable"
+        )
+    return (
+        f"Actor turn: {turn.actor_turn}  plan proposed: {turn.proposed_actions}  "
+        f"executed: {turn.executed_actions} (actions {turn.action_range})  "
+        f"selected: {within_turn}/{turn.executed_actions}  "
+        f"prediction: {prediction_text}  matching models: {matching_models}"
+    )
+
+
+def _prediction_matches(
+    report: Mapping[str, Any], executed_actions: int
+) -> tuple[bool | None, ...]:
+    plan = report.get("plan")
+    executed = report.get("executed")
+    if not isinstance(plan, list) or not isinstance(executed, list):
+        return (None,) * executed_actions
+    return tuple(
+        _predicted_transition_matches(plan, executed, index)
+        for index in range(executed_actions)
+    )
+
+
+def _predicted_transition_matches(
+    plan: list[Any], executed: list[Any], index: int
+) -> bool | None:
+    if index >= len(plan) or index >= len(executed):
+        return None
+    prediction = plan[index]
+    actual = executed[index]
+    if not isinstance(prediction, dict) or not isinstance(actual, dict):
+        return None
+    return prediction.get("next_state") == actual.get("next_state")
+
+
+def _action_matching_models(
+    report: Mapping[str, Any], executed_actions: int
+) -> tuple[tuple[str, ...] | None, ...]:
+    validation = report.get("plan_validation")
+    backtest = report.get("backtest")
+    executed = report.get("executed")
+    if not all(isinstance(value, dict) for value in (validation, backtest)):
+        return (None,) * executed_actions
+    predictions = validation.get("predictions")
+    surviving = backtest.get("surviving_models")
+    if not isinstance(predictions, list) or not isinstance(surviving, list):
+        return (None,) * executed_actions
+    if not isinstance(executed, list):
+        return (None,) * executed_actions
+    matches = []
+    for index in range(executed_actions):
+        if index >= len(predictions) or index >= len(executed):
+            matches.append(None)
+            continue
+        by_model = predictions[index]
+        actual = executed[index]
+        if not isinstance(by_model, dict) or not isinstance(actual, dict):
+            matches.append(None)
+            continue
+        next_state = actual.get("next_state")
+        matches.append(
+            tuple(
+                str(model)
+                for model in surviving
+                if by_model.get(str(model)) == next_state
+            )
+        )
+    return tuple(matches)
+
+
+def _is_actor_critic_turn(payload: Mapping[str, Any]) -> bool:
+    key = payload.get("eggopt_actor_critic_key")
+    return (
+        payload.get("role") == "user"
+        and isinstance(key, str)
+        and key.startswith(_ACTOR_CRITIC_TURN_KEY)
+    )
+
+
+def _timestamp(value: str) -> float | None:
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _optional_git_json(
+    repository: Path, commit: str, path: str
+) -> dict[str, Any] | None:
+    try:
+        return _git_json(repository, commit, path)
+    except (RuntimeError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _nonnegative_int(value: Any, default: int) -> int:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return default
+
+
+def _full_head(value: Any) -> str | None:
+    text = str(value or "").lower()
+    if len(text) == 40 and all(
+        character in "0123456789abcdef" for character in text
+    ):
+        return text
+    return None
+
+
+def _strings(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(str(item) for item in value)
 
 
 def _latest_evaluation(

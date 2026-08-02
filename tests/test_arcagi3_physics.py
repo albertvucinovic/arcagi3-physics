@@ -393,6 +393,13 @@ def test_reviewer_loads_critic_git_timeline_and_metadata(tmp_path):
     physics = create_root_thread(db, name="Physics")
     critic = create_child_thread(db, physics, name="Critic")
     actor = create_child_thread(db, critic, name="Actor")
+    append_message(
+        db,
+        actor,
+        "user",
+        "begin turn",
+        extra={"eggopt_actor_critic_key": "eggopt.actor-critic.turn.v1:test"},
+    )
     append_message(db, actor, "assistant", "proposal ready")
     append_message(db, critic, "assistant", "reviewed")
     db.close()
@@ -408,15 +415,34 @@ def test_reviewer_loads_critic_git_timeline_and_metadata(tmp_path):
     assert review.model_count == 1
     assert review.surviving_models == ("a",)
     assert review.generated_plans == 1
+    assert len(review.turns) == 1
+    assert review.turns[0].actor_turn == 1
+    assert review.turns[0].proposed_actions == 1
+    assert review.turns[0].executed_actions == 1
+    assert review.turns[0].action_range == "1"
     assert frame(review, 1)["action"] == action
+    assert frame(review, 1)["turn"] == review.turns[0]
     output = render(review, 1, color=False, columns=80, lines=24)
-    assert "frame 1/1" in output
-    assert "Actor turns: 1" in output
-    assert "Critic turns: 1" in output
+    assert "action 1/1" in output
+    assert "Actor turns: 1/1" in output
+    assert "Critic turns: 1/1" in output
+    assert "Real actions: 1/1" in output
+    assert "Critic HEAD" in output
+    assert "latest" in output
     assert "resolution: plan_exhausted" in output
     assert "models: 1" in output
     assert "surviving: ('a',)" in output
-    assert "Arriving action:" in output
+    assert "Action 1/1:" in output
+    assert "Actor turn: 1" in output
+    assert "plan proposed: 1" in output
+    assert "executed: 1 (actions 1)" in output
+
+    initial_output = render(review, 0, color=False, columns=80, lines=24)
+    assert "Actor turns: 0/1" in initial_output
+    assert "Real actions: 0/1" in initial_output
+    assert "Report stage: -" in initial_output
+    assert "Critic commits 0/1" in initial_output
+    assert "Actor turn: -" in initial_output
 
 
 def test_reviewer_defaults_to_configured_run():
@@ -455,6 +481,204 @@ def test_reviewer_defaults_to_configured_run():
     assert all(len(line) == 64 for line in plain)
 
 
+def test_reviewer_maps_each_action_to_historical_actor_turn_stats(tmp_path):
+    import json
+    import subprocess
+
+    from arcagi3_physics.review import frame, load_review, render
+
+    run = tmp_path / "run"
+    repository = run / "workspace" / "critic-repository"
+    trusted = repository / ".trusted"
+    evaluations = trusted / "evaluations"
+    evaluations.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(repository), "init", "-b", "main"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "user.name", "Physics"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "user.email", "physics@test"],
+        check=True,
+    )
+
+    def state(position):
+        return {
+            "grid": [[[position]]],
+            "legal_actions": [1],
+            "state": "NOT_FINISHED",
+            "levels_completed": 0,
+            "win_levels": 1,
+        }
+
+    timeline = [state(0)]
+    (trusted / "state.json").write_text(
+        json.dumps({"timeline": timeline, "actions": 0, "last_report": None})
+    )
+    subprocess.run(["git", "-C", str(repository), "add", "-A"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "commit",
+            "-m",
+            "[physics] initialize canonical world state",
+        ],
+        check=True,
+    )
+
+    def commit_turn(number, proposed, actual_positions, resolution):
+        actor_file = repository / f"actor-{number}.txt"
+        actor_file.write_text(str(number))
+        subprocess.run(["git", "-C", str(repository), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repository), "commit", "-m", f"Actor turn {number}"],
+            check=True,
+        )
+        actor_head = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        plan = []
+        executed = []
+        current = timeline[-1].get("next_state", timeline[-1])
+        for offset in range(proposed):
+            predicted = state(current["grid"][0][0][0] + 1)
+            plan.append(
+                {"state": current, "action": {"action": 1}, "next_state": predicted}
+            )
+            current = predicted
+        current = timeline[-1].get("next_state", timeline[-1])
+        for position in actual_positions:
+            transition = {
+                "state": current,
+                "action": {"action": 1},
+                "next_state": state(position),
+            }
+            timeline.append(transition)
+            executed.append(transition)
+            current = transition["next_state"]
+        report = {
+            "stage": "execution",
+            "head": actor_head,
+            "resolution": resolution,
+            "plan": plan,
+            "executed": executed,
+            "matching_models": [f"model-{number}"],
+        }
+        (trusted / "state.json").write_text(
+            json.dumps(
+                {
+                    "timeline": timeline,
+                    "actions": len(timeline) - 1,
+                    "last_report": report,
+                }
+            )
+        )
+        (evaluations / f"{actor_head}.json").write_text(
+            json.dumps(
+                {
+                    "backtest": {
+                        "models": {f"model-{number}": {}},
+                        "surviving_models": [f"model-{number}"],
+                    },
+                    "planning": {"suggestions": [{}] * number},
+                }
+            )
+        )
+        subprocess.run(["git", "-C", str(repository), "add", "-A"], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "commit",
+                "-m",
+                f"[physics] trusted result {number}",
+            ],
+            check=True,
+        )
+
+    commit_turn(1, proposed=3, actual_positions=[1, 9], resolution="wrong_prediction")
+    commit_turn(2, proposed=2, actual_positions=[10, 11], resolution="plan_exhausted")
+
+    review = load_review(run)
+    assert review.transitions == 4
+    assert review.actor_turns == 2
+    assert [turn.action_range for turn in review.turns] == ["1-2", "3-4"]
+    assert [turn.proposed_actions for turn in review.turns] == [3, 2]
+    assert [turn.executed_actions for turn in review.turns] == [2, 2]
+    assert frame(review, 2)["turn"].actor_turn == 1
+    assert frame(review, 3)["turn"].actor_turn == 2
+
+    first = render(review, 2, color=False, columns=160, lines=40)
+    assert "Actor turns: 1/2" in first
+    assert "Real actions: 2/4" in first
+    assert "Actor turn: 1" in first
+    assert "plan proposed: 3" in first
+    assert "executed: 2 (actions 1-2)" in first
+    assert "selected: 2/2" in first
+    assert "prediction: mismatched" in first
+    assert "resolution: wrong_prediction" in first
+    assert "model-1" in first
+
+    second = render(review, 3, color=False, columns=160, lines=40)
+    assert "Actor turns: 2/2" in second
+    assert "Real actions: 3/4" in second
+    assert "Actor turn: 2" in second
+    assert "plan proposed: 2" in second
+    assert "executed: 2 (actions 3-4)" in second
+    assert "selected: 1/2" in second
+    assert "resolution: plan_exhausted" in second
+    assert "prediction: matched" in second
+    assert "model-2" in second
+
+    latest = render(review, 4, color=False, columns=160, lines=40)
+    assert "selected: 2/2" in latest
+    assert "prediction: matched" in latest
+
+
+def test_reviewer_counts_actor_turn_prompts_not_tool_call_messages(tmp_path):
+    from eggthreads import (
+        ThreadsDB,
+        append_message,
+        create_child_thread,
+        create_root_thread,
+    )
+
+    from arcagi3_physics.review import _thread_turns
+
+    db = ThreadsDB(tmp_path / ".egg" / "threads.sqlite")
+    db.init_schema()
+    physics = create_root_thread(db, name="Physics")
+    critic = create_child_thread(db, physics, name="Critic")
+    actor = create_child_thread(db, critic, name="Actor")
+    for number in (1, 2):
+        append_message(
+            db,
+            actor,
+            "user",
+            f"turn {number}",
+            extra={
+                "eggopt_actor_critic_key": f"eggopt.actor-critic.turn.v1:{number}"
+            },
+        )
+        append_message(
+            db,
+            actor,
+            "assistant",
+            "",
+            extra={"tool_calls": [{"id": str(number)}]},
+        )
+        append_message(db, actor, "assistant", f"answer {number}")
+    db.close()
+
+    assert _thread_turns(tmp_path / ".egg" / "threads.sqlite") == (2, 0)
+
+
 def test_interactive_reviewer_fits_terminal_viewport(monkeypatch, tmp_path):
     from arcagi3_physics.review import Review, _raw_input, _terminal_viewport, render
 
@@ -482,6 +706,7 @@ def test_interactive_reviewer_fits_terminal_viewport(monkeypatch, tmp_path):
         model_count=100,
         surviving_models=("very-long-model-name",) * 10,
         generated_plans=100,
+        turns=(),
     )
 
     for columns, lines in ((40, 24), (80, 24), (117, 124), (240, 100)):
@@ -702,6 +927,13 @@ def test_shared_benchmark_thread_counts_are_scoped_to_environment(
         )
         set_thread_working_directory(db, actor, run / "workspace" / "innerContext")
         append_message(db, critic, "assistant", "reviewed")
+        append_message(
+            db,
+            actor,
+            "user",
+            "begin turn",
+            extra={"eggopt_actor_critic_key": "eggopt.actor-critic.turn.v1:test"},
+        )
         append_message(db, actor, "assistant", "acted")
     db.close()
 
