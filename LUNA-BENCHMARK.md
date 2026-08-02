@@ -45,10 +45,10 @@ resource-class policy. Each Actor defaults to a 300,000-token full-history limit
 matching the configured Luna context; set `ARC_ACTOR_CONTEXT_LIMIT=0` to make the
 Eggopt limit unlimited.
 
-LLM slots use Eggthreads sticky scheduling with a 5-second idle threshold. A
-recently active Actor therefore retains its slot while its trusted Critic runs
-the bounded evaluator (300 seconds by default), instead of immediately yielding
-the slot to a new environment.
+Sticky scheduling is disabled for benchmark runs, so an Actor can yield its LLM
+slot while its trusted Critic runs the bounded evaluator. The configured sticky
+idle threshold remains 5 seconds but has no effect while sticky scheduling is
+disabled.
 
 ARC domain completion is independent of Physics safety budgets: trusted public
 state `WIN` stops successfully, while `GAME_OVER` or an empty legal-action list

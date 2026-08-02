@@ -561,11 +561,11 @@ def test_luna_benchmark_defaults_and_single_game_selection():
     scheduler = RunnerConfig(
         max_concurrent_threads=arguments.max_parallel,
         max_concurrent_llm_threads=arguments.max_parallel,
-        sticky_scheduling=True,
+        sticky_scheduling=False,
         sticky_idle_threshold_sec=5,
     )
     assert scheduler.effective_max_concurrent_llm_threads == 3
-    assert scheduler.sticky_scheduling is True
+    assert scheduler.sticky_scheduling is False
     assert scheduler.sticky_idle_threshold_sec == 5
     environments = Path("environment_files")
     if environments.is_dir():
