@@ -94,7 +94,7 @@ def load_review(run_dir: str | Path) -> Review:
         if isinstance(backtest, dict)
         else ()
     )
-    plans = planning.get("plans", ()) if isinstance(planning, dict) else ()
+    suggestions = planning.get("suggestions", ()) if isinstance(planning, dict) else ()
     return Review(
         repository=repository,
         timeline=timeline,
@@ -108,7 +108,7 @@ def load_review(run_dir: str | Path) -> Review:
         evaluated_head=evaluated_head,
         model_count=len(models) if isinstance(models, dict) else 0,
         surviving_models=surviving,
-        generated_plans=len(plans) if isinstance(plans, list) else 0,
+        generated_plans=len(suggestions) if isinstance(suggestions, list) else 0,
     )
 
 
@@ -140,8 +140,8 @@ def render(
     state = item["state"]
     grid = _visible_grid(state.get("grid"))
     report = review.report
-    plan = report.get("committed_plan") if isinstance(report, dict) else None
-    models = report.get("compatible_models", ()) if isinstance(report, dict) else ()
+    plan = report.get("plan") if isinstance(report, dict) else None
+    models = report.get("matching_models", ()) if isinstance(report, dict) else ()
     terminal_columns, terminal_lines = _terminal_viewport()
     width = max(_MIN_COLUMNS, columns or terminal_columns)
     height = lines or terminal_lines
@@ -162,7 +162,7 @@ def render(
         (
             f"Evaluated Actor HEAD: {(review.evaluated_head or '-')[:12]}  "
             f"models: {review.model_count}  surviving: {review.surviving_models}  "
-            f"generated plans: {review.generated_plans}"
+            f"planner suggestions: {review.generated_plans}"
         ),
         (
             f"Game state: {state.get('state', '-')}  levels: "
@@ -178,8 +178,8 @@ def render(
             )
         ),
         (
-            f"Plan: {(plan or {}).get('purpose', '-')}  models: "
-            f"{(plan or {}).get('models', ())}  compatible: {models}"
+            f"Submitted plan transitions: {len(plan) if isinstance(plan, list) else 0}  "
+            f"matching models: {models}"
         ),
     ]
     footer = [

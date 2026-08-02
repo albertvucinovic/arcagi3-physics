@@ -7,7 +7,12 @@ from typing import Any
 import pytest
 from eggopt import Agent, physics_actor_system_prompt
 
-from arcagi3_physics.environment import Execute, Initialize, clear_live_sessions
+from arcagi3_physics.environment import (
+    Execute,
+    Initialize,
+    clear_live_sessions,
+    validate_action,
+)
 from arcagi3_physics.run import build_parser
 from arcagi3_physics.solver import ARC_DOMAIN_PROMPT, arc_goal, arc_physics
 
@@ -148,10 +153,7 @@ def test_step_executes_a_parameterized_click_intent(monkeypatch):
 
     result = environment._step(
         env,
-        {
-            "action": {"action": 6, "data": {"x": 12, "y": 34}},
-            "prediction": {"model": "opaque"},
-        },
+        {"action": 6, "data": {"x": 12, "y": 34}},
     )
 
     assert result["legal_actions"] == [1]
@@ -164,6 +166,24 @@ def test_step_executes_a_parameterized_click_intent(monkeypatch):
         environment._step(
             env, {"action": 6, "data": {"x": -1, "y": 2}}
         )
+
+
+def test_domain_validates_unified_arc_action_objects():
+    current = {"legal_actions": [1, 6]}
+    assert validate_action(current, {"action": 1}) is None
+    assert validate_action(
+        current, {"action": 6, "data": {"x": 12, "y": 34}}
+    ) is None
+    with pytest.raises(ValueError, match="must be objects"):
+        validate_action(current, 1)
+    with pytest.raises(ValueError, match="must be objects"):
+        validate_action(current, {})
+    with pytest.raises(ValueError, match="currently legal"):
+        validate_action(current, {"action": 2})
+    with pytest.raises(ValueError, match="coordinates"):
+        validate_action(current, {"action": 6})
+    with pytest.raises(ValueError, match="exactly action"):
+        validate_action(current, {"action": 1, "data": {}})
 
 
 def test_arc_goal_uses_trusted_public_completion_fields():
@@ -199,7 +219,8 @@ def test_arc_composition_is_thin_and_requires_actor_tools(tmp_path):
         game="fake", seed=0, environments_dir=tmp_path, actor=configured
     )
     assert strategy.domain_information == ARC_DOMAIN_PROMPT
-    assert strategy.legal_actions_key == "legal_actions"
+    assert {"action": 1} in strategy.planner_actions
+    assert strategy.validate_action is validate_action
     assert strategy.is_goal({"state": "WIN"})
 
 
@@ -216,8 +237,18 @@ def test_runner_and_prompt_defaults():
     prompt = physics_actor_system_prompt(ARC_DOMAIN_PROMPT)
     assert "Git repository" in prompt
     assert "step_<suffix>" in prompt
+    assert "plan has no type and no branches" in prompt
+    assert "Planner suggestions are aids, not constraints" in prompt
+    assert "need not have been found by `plan.py`" in prompt
+    assert "optional `reward_<suffix>" in prompt
     assert "ARC-AGI-3" in prompt
-    assert "Action 6 is a mouse click" in ARC_DOMAIN_PROMPT
+    assert "Action 6 is a mouse" in ARC_DOMAIN_PROMPT
+    assert '{"action": 1}' in ARC_DOMAIN_PROMPT
+    assert '"data": {"x": X, "y": Y}' in ARC_DOMAIN_PROMPT
+    assert "actions_<suffix>" not in ARC_DOMAIN_PROMPT
+    assert "actions_<suffix>" not in prompt
+    assert "committed-plan" not in prompt
+    assert "proposed-plans" not in prompt
     assert "(0, 0) is the upper-left" in ARC_DOMAIN_PROMPT
     assert '{"action": 6, "data": {"x": X, "y": Y}}' in ARC_DOMAIN_PROMPT
 
@@ -245,7 +276,7 @@ def test_real_offline_arc_click_intent_when_available():
         0,
         environments,
         (initial,),
-        {"action": click, "prediction": {"model": "opaque"}},
+        click,
     ).run()
 
     assert result["grid"]
@@ -287,20 +318,16 @@ def test_reviewer_loads_critic_git_timeline_and_metadata(tmp_path):
         **initial,
         "grid": [[[1, 1], [2, 3]]],
     }
-    intent = {"action": 1, "prediction": {"a": next_state}}
+    action = {"action": 1}
     timeline = [
         initial,
-        {"state": initial, "action": intent, "next_state": next_state},
+        {"state": initial, "action": action, "next_state": next_state},
     ]
     report = {
         "stage": "execution",
         "resolution": "plan_exhausted",
-        "compatible_models": ["a"],
-        "committed_plan": {
-            "purpose": "goal",
-            "models": ["a"],
-            "intents": [intent],
-        },
+        "matching_models": ["a"],
+        "plan": [{"state": initial, "action": action, "next_state": next_state}],
     }
     trusted = repository / ".trusted"
     (trusted / "evaluations").mkdir(parents=True)
@@ -314,7 +341,7 @@ def test_reviewer_loads_critic_git_timeline_and_metadata(tmp_path):
                     "models": {"a": {}},
                     "surviving_models": ["a"],
                 },
-                "planning": {"plans": [{"purpose": "goal"}]},
+                "planning": {"suggestions": [{"kind": "reward"}]},
             }
         )
     )
@@ -351,7 +378,7 @@ def test_reviewer_loads_critic_git_timeline_and_metadata(tmp_path):
     assert review.model_count == 1
     assert review.surviving_models == ("a",)
     assert review.generated_plans == 1
-    assert frame(review, 1)["action"] == intent
+    assert frame(review, 1)["action"] == action
     output = render(review, 1, color=False, columns=80, lines=24)
     assert "frame 1/1" in output
     assert "Actor turns: 1" in output

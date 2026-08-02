@@ -4,26 +4,25 @@ from pathlib import Path
 
 from eggopt import Agent, PhysicsStrategy
 
-from .environment import Execute, Initialize
+from .environment import Execute, Initialize, validate_action
 
 ARC_DOMAIN_PROMPT = """You are reverse engineering an ARC-AGI-3 game from public observations.
 A public state contains a 64x64 color-index grid, currently legal action IDs,
 visible game state, levels completed, and levels needed to win. Never inspect the
 real environment implementation or hidden state.
 
-ARC actions 1-5 are simple controls and action 7 is Undo; they are represented as
-scalar integers. Action 6 is a mouse click and requires integer pixel coordinates
-`x` and `y` in the 64x64 frame: (0, 0) is the upper-left, x increases rightward,
-and y increases downward. When action 6 is listed as legal, define the optional
-`actions_<suffix>(state)` generator for each relevant hypothesis and return a finite,
-bounded set of in-bounds click intents justified by visible pixels. Represent each
-click as {"action": 6, "data": {"x": X, "y": Y}}; the planner preserves that
-complete intent in committed plans. Never execute or commit bare action 6.
+Every ARC action is a JSON object. The available numeric IDs in the public state
+tell you which action objects may currently be used. Simple controls and Undo
+are represented as {"action": 1} through {"action": 5}, and {"action": 7}.
+These objects contain exactly the `action` field. Action 6 is a mouse click
+represented as {"action": 6, "data": {"x": X, "y": Y}}, where X and Y are
+integers from 0 through 63. (0, 0) is the upper-left; x increases rightward and
+y downward. When action 6 is currently legal, choose complete coordinates from
+public visual evidence. Never submit a bare action identifier.
 
-In `world_model.py`, define matching `step_<suffix>` and `reward_<suffix>` pairs.
-`step_*` predicts the complete next public state; `reward_*` is that model's
-inferred goal/utility. Use the generic Physics `backtest.py`, `plan.py`, and
-`commit.py` instruments documented in `INSTRUCTIONS.md`.
+In `world_model.py`, define `step_<suffix>` hypotheses. You may additionally
+define `reward_<suffix>` for any hypothesis you want the advisory planner to
+search. Use the Physics instruments documented in `INSTRUCTIONS.md`.
 """
 
 
@@ -47,13 +46,14 @@ def arc_physics(
     return PhysicsStrategy(
         actor=actor,
         observe=lambda **_: Initialize(game, seed, environments_dir),
-        execute=lambda timeline, intent, **_: Execute(
-            game, seed, environments_dir, timeline, intent
+        execute=lambda timeline, action, **_: Execute(
+            game, seed, environments_dir, timeline, action
         ),
+        validate_action=validate_action,
         is_goal=arc_goal,
         identity={"domain": "arc-agi-3", "version": 3, "game": game, "seed": seed},
         domain_information=ARC_DOMAIN_PROMPT,
-        legal_actions_key="legal_actions",
+        planner_actions=tuple({"action": action} for action in (1, 2, 3, 4, 5, 7)),
         max_depth=max_depth,
         max_nodes=max_nodes,
         evaluator_timeout_sec=evaluator_timeout_sec,

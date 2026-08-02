@@ -56,7 +56,7 @@ class Execute(Task):
     seed: int
     environments_dir: str | Path
     timeline: tuple[Any, ...]
-    intent: Any
+    action: Any
 
     cacheable = False
 
@@ -67,7 +67,9 @@ class Execute(Task):
             if env is None:
                 env = _recover(key, self.timeline)
                 _SESSIONS[key] = env
-            return _step(env, self.intent)
+            current = self.timeline[-1].get("next_state", self.timeline[-1])
+            validate_action(current, self.action)
+            return _step(env, self.action)
 
 
 def clear_live_sessions() -> None:
@@ -85,6 +87,7 @@ def _recover(key, timeline):
             "ARC reset does not reproduce the recorded initial observation"
         )
     for recorded in timeline[1:]:
+        validate_action(current, recorded["action"])
         current = _step(env, recorded["action"])
         if current != recorded["next_state"]:
             raise RuntimeError("ARC replay contradicts the immutable Timeline")
@@ -108,37 +111,46 @@ def _environment(game: str, seed: int, environments_dir: str | Path):
     return env
 
 
-def _step(env, intent):
-    from arcengine import GameAction
+def validate_action(state, action) -> None:
+    """Validate one complete ARC action against a public state."""
 
-    action = intent["action"] if isinstance(intent, dict) else intent
-    data = intent.get("data", {}) if isinstance(intent, dict) else {}
-    if isinstance(action, dict):
-        nested_data = action.get("data", {})
-        if data and data != nested_data:
-            raise ValueError("ARC intent contains conflicting action data")
-        data = nested_data or data
-        action = action.get("action")
-    if action is None:
-        raise ValueError("ARC intent is missing an action identifier")
-    action = GameAction.from_id(int(action))
-    if action not in env.action_space:
-        raise ValueError(f"ARC action is not currently legal: {action.name}")
-    if action.is_complex():
+    if (
+        not isinstance(action, dict)
+        or "action" not in action
+        or set(action) - {"action", "data"}
+    ):
+        raise ValueError(
+            "ARC actions must be objects containing action and optional data"
+        )
+    identifier = action.get("action")
+    if type(identifier) is not int or identifier not in state.get("legal_actions", ()):
+        raise ValueError("ARC action is not currently legal")
+    data = action.get("data")
+    if identifier == 6:
         valid_click = isinstance(data, dict) and set(data) == {"x", "y"}
         valid_click = valid_click and all(
             type(data[key]) is int and 0 <= data[key] <= 63 for key in ("x", "y")
         )
         if not valid_click:
             raise ValueError(
-                "ARC ACTION6 requires integer click coordinates x and y in [0, 63]"
+                "ARC action 6 requires integer click coordinates x and y in [0, 63]"
             )
+    elif set(action) != {"action"}:
+        raise ValueError("ARC simple actions must contain exactly action")
+
+
+def _step(env, action):
+    from arcengine import GameAction
+
+    data = action.get("data", {})
+    game_action = GameAction.from_id(action["action"])
+    if game_action not in env.action_space:
+        raise ValueError(f"ARC action is not currently legal: {game_action.name}")
+    if game_action.is_complex():
         try:
-            action.validate_data(data)
+            game_action.validate_data(data)
         except (TypeError, ValueError) as exc:
             raise ValueError(
-                "ARC ACTION6 requires integer click coordinates x and y in [0, 63]"
+                "ARC action 6 requires integer click coordinates x and y in [0, 63]"
             ) from exc
-    elif data:
-        raise ValueError(f"ARC simple action does not accept data: {action.name}")
-    return observation(env.step(action, data=data))
+    return observation(env.step(game_action, data=data))
