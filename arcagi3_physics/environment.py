@@ -113,7 +113,32 @@ def _step(env, intent):
 
     action = intent["action"] if isinstance(intent, dict) else intent
     data = intent.get("data", {}) if isinstance(intent, dict) else {}
+    if isinstance(action, dict):
+        nested_data = action.get("data", {})
+        if data and data != nested_data:
+            raise ValueError("ARC intent contains conflicting action data")
+        data = nested_data or data
+        action = action.get("action")
+    if action is None:
+        raise ValueError("ARC intent is missing an action identifier")
     action = GameAction.from_id(int(action))
     if action not in env.action_space:
         raise ValueError(f"ARC action is not currently legal: {action.name}")
+    if action.is_complex():
+        valid_click = isinstance(data, dict) and set(data) == {"x", "y"}
+        valid_click = valid_click and all(
+            type(data[key]) is int and 0 <= data[key] <= 63 for key in ("x", "y")
+        )
+        if not valid_click:
+            raise ValueError(
+                "ARC ACTION6 requires integer click coordinates x and y in [0, 63]"
+            )
+        try:
+            action.validate_data(data)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "ARC ACTION6 requires integer click coordinates x and y in [0, 63]"
+            ) from exc
+    elif data:
+        raise ValueError(f"ARC simple action does not accept data: {action.name}")
     return observation(env.step(action, data=data))

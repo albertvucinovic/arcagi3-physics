@@ -51,6 +51,30 @@ class FakeEnv:
         return FakeFrame(self.position)
 
 
+class ComplexAction:
+    value = 6
+
+    @property
+    def name(self):
+        return "ACTION6"
+
+    def __eq__(self, other):
+        return getattr(other, "value", None) == self.value
+
+    def __hash__(self):
+        return hash(self.value)
+
+
+class ComplexEnv:
+    def __init__(self):
+        self.action_space = [ComplexAction()]
+        self.received = []
+
+    def step(self, action, data=None):
+        self.received.append((action.value, data))
+        return FakeFrame(1)
+
+
 class FakeAction:
     def __init__(self, value):
         self.value = value
@@ -100,6 +124,46 @@ def test_offline_session_reuses_live_env_and_replays_only_after_loss(monkeypatch
     assert environments[1].resets == 1
     assert environments[1].steps == 3
     assert third["grid"] == [[[3]]]
+
+
+def test_step_executes_a_parameterized_click_intent(monkeypatch):
+    from arcagi3_physics import environment
+
+    monkeypatch.setattr(
+        "arcengine.GameAction.from_id", lambda action: ComplexAction()
+    )
+    monkeypatch.setattr(ComplexAction, "is_complex", lambda _self: True, raising=False)
+    monkeypatch.setattr(
+        ComplexAction,
+        "validate_data",
+        lambda _self, data: (
+            True
+            if set(data) == {"x", "y"}
+            and all(isinstance(data[key], int) and 0 <= data[key] <= 63 for key in data)
+            else (_ for _ in ()).throw(ValueError("bad click"))
+        ),
+        raising=False,
+    )
+    env = ComplexEnv()
+
+    result = environment._step(
+        env,
+        {
+            "action": {"action": 6, "data": {"x": 12, "y": 34}},
+            "prediction": {"model": "opaque"},
+        },
+    )
+
+    assert result["legal_actions"] == [1]
+    assert env.received == [(6, {"x": 12, "y": 34})]
+    environment._step(env, {"action": 6, "data": {"x": 56, "y": 7}})
+    assert env.received[-1] == (6, {"x": 56, "y": 7})
+    with pytest.raises(ValueError, match="requires integer click coordinates"):
+        environment._step(env, {"action": 6})
+    with pytest.raises(ValueError, match="requires integer click coordinates"):
+        environment._step(
+            env, {"action": 6, "data": {"x": -1, "y": 2}}
+        )
 
 
 def test_arc_goal_uses_trusted_public_completion_fields():
@@ -153,6 +217,9 @@ def test_runner_and_prompt_defaults():
     assert "Git repository" in prompt
     assert "step_<suffix>" in prompt
     assert "ARC-AGI-3" in prompt
+    assert "Action 6 is a mouse click" in ARC_DOMAIN_PROMPT
+    assert "(0, 0) is the upper-left" in ARC_DOMAIN_PROMPT
+    assert '{"action": 6, "data": {"x": X, "y": Y}}' in ARC_DOMAIN_PROMPT
 
 
 def test_real_offline_arc_initial_observation_when_available():
@@ -163,6 +230,26 @@ def test_real_offline_arc_initial_observation_when_available():
     initial = Initialize("ls20", 0, environments).run()
     assert initial["grid"]
     assert initial["legal_actions"]
+
+
+def test_real_offline_arc_click_intent_when_available():
+    environments = Path("environment_files").resolve()
+    if not environments.exists():
+        pytest.skip("local ARC environment files are unavailable")
+    clear_live_sessions()
+    initial = Initialize("lf52", 0, environments).run()
+    click = {"action": 6, "data": {"x": 40, "y": 35}}
+
+    result = Execute(
+        "lf52",
+        0,
+        environments,
+        (initial,),
+        {"action": click, "prediction": {"model": "opaque"}},
+    ).run()
+
+    assert result["grid"]
+    assert result["state"] == "NOT_FINISHED"
 
 
 def test_reviewer_loads_critic_git_timeline_and_metadata(tmp_path):
