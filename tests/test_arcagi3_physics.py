@@ -1104,3 +1104,39 @@ def test_grid_to_png_selects_latest_canonical_timeline_state(tmp_path):
 
     assert completed.returncode == 0, completed.stderr
     assert output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_grid_to_png_accepts_initial_only_canonical_timeline(tmp_path):
+    import json
+    import subprocess
+
+    helper = tmp_path / "gridToPng.py"
+    helper.write_text(GRID_TO_PNG)
+    source = tmp_path / "canonical-input.json"
+    source.write_text(
+        json.dumps(
+            {
+                "timeline": [
+                    {
+                        "grid": [[[0, 8], [9, 15]]],
+                        "legal_actions": [1],
+                        "levels_completed": 0,
+                        "state": "NOT_FINISHED",
+                        "win_levels": 1,
+                    }
+                ]
+            }
+        )
+    )
+    output = tmp_path / "grid.png"
+
+    completed = subprocess.run(
+        ["python", "-I", str(helper), str(source), str(output)],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")

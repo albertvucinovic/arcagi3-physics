@@ -59,8 +59,14 @@ def _public_state(value):
         if not isinstance(timeline, list) or not timeline:
             raise ValueError("timeline must be a non-empty list")
         value = timeline[-1]
-        if isinstance(value, dict):
-            value = value.get("next_state", value.get("state", value))
+    if isinstance(value, dict) and "next_state" in value:
+        value = value["next_state"]
+    elif (
+        isinstance(value, dict)
+        and "grid" not in value
+        and isinstance(value.get("state"), dict)
+    ):
+        value = value["state"]
     if isinstance(value, dict) and "grid" in value:
         value = value["grid"]
     return value
