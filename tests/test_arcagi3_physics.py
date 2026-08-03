@@ -16,6 +16,7 @@ from arcagi3_physics.environment import (
 from arcagi3_physics.grid_to_png import ARC_DOMAIN_FILES, GRID_TO_PNG
 from arcagi3_physics.run import build_parser
 from arcagi3_physics.solver import (
+    ARC_ACTOR_TOOLS,
     ARC_DOMAIN_PROMPT,
     arc_goal,
     arc_physics,
@@ -238,13 +239,12 @@ def test_arc_composition_is_thin_and_requires_actor_tools(tmp_path):
         ScriptedLLM(),
         {"role": "actor"},
         auto_approve_tools=True,
-        allowed_tools=frozenset(
-            {"bash", "python_exec", "add_local_file_to_model_context"}
-        ),
+        allowed_tools=ARC_ACTOR_TOOLS,
     )
     strategy = arc_physics(
         game="fake", seed=0, environments_dir=tmp_path, actor=configured
     )
+    assert configured.allowed_tools == ARC_ACTOR_TOOLS
     assert strategy.domain_information == ARC_DOMAIN_PROMPT
     assert strategy.domain_files == ARC_DOMAIN_FILES
     assert {"action": 1} in strategy.planner_actions
@@ -269,6 +269,8 @@ def test_runner_and_prompt_defaults():
     assert "hypothesis you consider most likely" in prompt
     assert "using as few real actions as possible" in prompt
     assert "pass every required level" in prompt
+    assert "answer_user_while_preserving_llm_turn" in prompt
+    assert "plain assistant answer" in prompt
     assert "reach the public `WIN` state" in prompt
     assert "matching `reward_<suffix>`" in prompt
     assert "Run `python plan.py`" in prompt
@@ -1033,7 +1035,7 @@ def test_interrupted_summary_recovers_durable_environment_status(tmp_path):
     assert results[1].status == "interrupted"
 
 
-def test_arc_requires_image_context_tool(tmp_path):
+def test_arc_requires_complete_actor_tool_set(tmp_path):
     actor = Agent(
         ScriptedLLM(),
         {"role": "actor"},
@@ -1041,7 +1043,10 @@ def test_arc_requires_image_context_tool(tmp_path):
         allowed_tools=frozenset({"bash", "python_exec"}),
     )
 
-    with pytest.raises(ValueError, match="add_local_file_to_model_context"):
+    with pytest.raises(
+        ValueError,
+        match="add_local_file_to_model_context.*answer_user_while_preserving_llm_turn",
+    ):
         arc_physics(game="fake", seed=0, environments_dir=tmp_path, actor=actor)
 
 

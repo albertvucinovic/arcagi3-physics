@@ -35,7 +35,7 @@ from eggthreads import (
 )
 
 from .run import _limit, _model_paths, _write_json
-from .solver import ARC_DOMAIN_PROMPT, arc_physics
+from .solver import ARC_ACTOR_TOOLS, ARC_DOMAIN_PROMPT, arc_physics
 
 ROOT_NAME = "arc-agi-3-public"
 DEFAULT_MODEL = "Pro: GPT-5.6 Luna max"
@@ -298,9 +298,7 @@ async def _run(arguments: argparse.Namespace) -> tuple[Path, int]:
         models_path=models,
         context_limit=_limit(arguments.actor_context_limit),
         auto_approve_tools=True,
-        allowed_tools=frozenset(
-            {"bash", "python_exec", "add_local_file_to_model_context"}
-        ),
+        allowed_tools=ARC_ACTOR_TOOLS,
         system_prompt=physics_actor_system_prompt(ARC_DOMAIN_PROMPT),
         scheduler_managed=True,
     )

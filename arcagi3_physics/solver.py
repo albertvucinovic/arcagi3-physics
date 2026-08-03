@@ -7,6 +7,19 @@ from eggopt import Agent, PhysicsStrategy, TerminalOutcome
 from .environment import Execute, Initialize, validate_action
 from .grid_to_png import ARC_DOMAIN_FILES
 
+ARC_ACTOR_TOOLS = frozenset(
+    {
+        "add_local_file_to_model_context",
+        "answer_user_while_preserving_llm_turn",
+        "bash",
+        "python_exec",
+        "python_repl",
+        "read_long_tool_output",
+        "skill",
+        "tool_help",
+    }
+)
+
 ARC_DOMAIN_PROMPT = """You are reverse engineering an ARC-AGI-3 game from public observations.
 A public state contains a 64x64 color-index grid, currently legal action IDs,
 visible game state, levels completed, and levels needed to win. Never inspect the
@@ -67,11 +80,10 @@ def arc_physics(
     environments_dir = str(Path(environments_dir).resolve())
     if not actor.auto_approve_tools:
         raise ValueError("ARC Physics Actor must auto-approve its tools")
-    required_tools = {"bash", "python_exec", "add_local_file_to_model_context"}
-    if not required_tools <= set(actor.allowed_tools):
+    if not ARC_ACTOR_TOOLS <= set(actor.allowed_tools):
+        missing = sorted(ARC_ACTOR_TOOLS - set(actor.allowed_tools))
         raise ValueError(
-            "ARC Physics Actor needs bash, python_exec, and "
-            "add_local_file_to_model_context"
+            f"ARC Physics Actor is missing required tools: {', '.join(missing)}"
         )
     return PhysicsStrategy(
         actor=actor,

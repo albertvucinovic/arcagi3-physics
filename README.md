@@ -32,6 +32,12 @@ grid, public state, or the latest state in `canonical-input.json` to a PNG. The
 Actor can then use its image-only `add_local_file_to_model_context` tool to view
 that PNG in the next model turn.
 
+The ARC Physics Actor allowlist also includes `bash`, `python_exec`,
+`python_repl`, `answer_user_while_preserving_llm_turn`,
+`read_long_tool_output`, `skill`, and `tool_help`. Generic Physics instructions
+ask the Actor to use interim Assistant Notes as a visible lab notebook while it
+continues working; only a later plain assistant answer ends and submits the turn.
+
 Run or resume:
 
 ```bash
