@@ -13,6 +13,7 @@ from arcagi3_physics.environment import (
     clear_live_sessions,
     validate_action,
 )
+from arcagi3_physics.grid_to_png import ARC_DOMAIN_FILES, GRID_TO_PNG
 from arcagi3_physics.run import build_parser
 from arcagi3_physics.solver import (
     ARC_DOMAIN_PROMPT,
@@ -237,12 +238,15 @@ def test_arc_composition_is_thin_and_requires_actor_tools(tmp_path):
         ScriptedLLM(),
         {"role": "actor"},
         auto_approve_tools=True,
-        allowed_tools=frozenset({"bash", "python_exec"}),
+        allowed_tools=frozenset(
+            {"bash", "python_exec", "add_local_file_to_model_context"}
+        ),
     )
     strategy = arc_physics(
         game="fake", seed=0, environments_dir=tmp_path, actor=configured
     )
     assert strategy.domain_information == ARC_DOMAIN_PROMPT
+    assert strategy.domain_files == ARC_DOMAIN_FILES
     assert {"action": 1} in strategy.planner_actions
     assert strategy.validate_action is validate_action
     assert strategy.is_goal({"state": "WIN"})
@@ -268,6 +272,9 @@ def test_runner_and_prompt_defaults():
     assert "reach the public `WIN` state" in prompt
     assert "matching `reward_<suffix>`" in prompt
     assert "Run `python plan.py`" in prompt
+    assert "gridToPng.py" in prompt
+    assert "add_local_file_to_model_context" in prompt
+    assert "accepts images only" in prompt
     assert "Undo is also a real action" in prompt
     assert "Planner suggestions are aids, not constraints" in prompt
     assert "need not have been found by `plan.py`" in prompt
@@ -1024,3 +1031,76 @@ def test_interrupted_summary_recovers_durable_environment_status(tmp_path):
     assert results[0].status == "completed"
     assert results[0].actions == 4
     assert results[1].status == "interrupted"
+
+
+def test_arc_requires_image_context_tool(tmp_path):
+    actor = Agent(
+        ScriptedLLM(),
+        {"role": "actor"},
+        auto_approve_tools=True,
+        allowed_tools=frozenset({"bash", "python_exec"}),
+    )
+
+    with pytest.raises(ValueError, match="add_local_file_to_model_context"):
+        arc_physics(game="fake", seed=0, environments_dir=tmp_path, actor=actor)
+
+
+def test_grid_to_png_renders_arc_palette_without_domain_imports(tmp_path):
+    import json
+    import struct
+    import subprocess
+
+    helper = tmp_path / "gridToPng.py"
+    helper.write_text(GRID_TO_PNG)
+    source = tmp_path / "state.json"
+    source.write_text(json.dumps({"grid": [[[0, 8], [9, 15]]]}))
+    output = tmp_path / "scratch" / "grid.png"
+
+    completed = subprocess.run(
+        ["python", "-I", str(helper), str(source), str(output), "--scale", "3"],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    data = output.read_bytes()
+    assert data.startswith(b"\x89PNG\r\n\x1a\n")
+    width, height = struct.unpack(">II", data[16:24])
+    assert (width, height) == (6, 6)
+
+
+def test_grid_to_png_selects_latest_canonical_timeline_state(tmp_path):
+    import json
+    import subprocess
+
+    helper = tmp_path / "gridToPng.py"
+    helper.write_text(GRID_TO_PNG)
+    source = tmp_path / "canonical-input.json"
+    source.write_text(
+        json.dumps(
+            {
+                "timeline": [
+                    {"grid": [[[0]]]},
+                    {
+                        "state": {"grid": [[[0]]]},
+                        "action": {"action": 1},
+                        "next_state": {"grid": [[[8]]]},
+                    },
+                ]
+            }
+        )
+    )
+    output = tmp_path / "grid.png"
+
+    completed = subprocess.run(
+        ["python", "-I", str(helper), str(source), str(output)],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")

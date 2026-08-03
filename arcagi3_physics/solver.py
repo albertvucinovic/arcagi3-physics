@@ -5,11 +5,23 @@ from pathlib import Path
 from eggopt import Agent, PhysicsStrategy, TerminalOutcome
 
 from .environment import Execute, Initialize, validate_action
+from .grid_to_png import ARC_DOMAIN_FILES
 
 ARC_DOMAIN_PROMPT = """You are reverse engineering an ARC-AGI-3 game from public observations.
 A public state contains a 64x64 color-index grid, currently legal action IDs,
 visible game state, levels completed, and levels needed to win. Never inspect the
 real environment implementation or hidden state.
+
+`gridToPng.py` is an ARC domain helper in your repository. Use it to render any
+2-D ARC color-index grid, a public state, or the latest state in
+`canonical-input.json`, for example:
+
+    python gridToPng.py canonical-input.json scratch/current-grid.png
+
+Then call `add_local_file_to_model_context` with the PNG path to view the image
+in your next model context. That tool accepts images only. Use this visual route
+whenever it helps you understand spatial structure; keep generated PNGs under
+`scratch/` so they are not committed.
 
 Your objective is to pass every required level and reach the public `WIN` state
 using as few real actions as possible. Do not treat exploration, a plausible
@@ -55,8 +67,12 @@ def arc_physics(
     environments_dir = str(Path(environments_dir).resolve())
     if not actor.auto_approve_tools:
         raise ValueError("ARC Physics Actor must auto-approve its tools")
-    if not {"bash", "python_exec"} <= set(actor.allowed_tools):
-        raise ValueError("ARC Physics Actor needs bash and python_exec")
+    required_tools = {"bash", "python_exec", "add_local_file_to_model_context"}
+    if not required_tools <= set(actor.allowed_tools):
+        raise ValueError(
+            "ARC Physics Actor needs bash, python_exec, and "
+            "add_local_file_to_model_context"
+        )
     return PhysicsStrategy(
         actor=actor,
         observe=lambda **_: Initialize(game, seed, environments_dir),
@@ -65,9 +81,10 @@ def arc_physics(
         ),
         validate_action=validate_action,
         is_goal=arc_goal,
-        identity={"domain": "arc-agi-3", "version": 4, "game": game, "seed": seed},
+        identity={"domain": "arc-agi-3", "version": 5, "game": game, "seed": seed},
         terminal_outcome=arc_terminal_outcome,
         domain_information=ARC_DOMAIN_PROMPT,
+        domain_files=ARC_DOMAIN_FILES,
         planner_actions=tuple({"action": action} for action in (1, 2, 3, 4, 5, 7)),
         max_depth=max_depth,
         max_nodes=max_nodes,

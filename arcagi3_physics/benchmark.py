@@ -293,12 +293,14 @@ async def _run(arguments: argparse.Namespace) -> tuple[Path, int]:
     llm = create_llm_client(models_path=models, all_models_path=all_models)
     actor = Agent(
         llm,
-        {"role": "arc-physics-actor", "version": 2},
+        {"role": "arc-physics-actor", "version": 3},
         model_key=arguments.actor_model,
         models_path=models,
         context_limit=_limit(arguments.actor_context_limit),
         auto_approve_tools=True,
-        allowed_tools=frozenset({"bash", "python_exec"}),
+        allowed_tools=frozenset(
+            {"bash", "python_exec", "add_local_file_to_model_context"}
+        ),
         system_prompt=physics_actor_system_prompt(ARC_DOMAIN_PROMPT),
         scheduler_managed=True,
     )

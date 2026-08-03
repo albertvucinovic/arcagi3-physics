@@ -27,6 +27,11 @@ Physics
 The Actor repository is `<run-dir>/workspace/innerContext`; the Critic's pulled
 history is `<run-dir>/workspace/critic-repository`.
 
+ARC adds `gridToPng.py` to each Actor repository. It renders a 2-D ARC color
+grid, public state, or the latest state in `canonical-input.json` to a PNG. The
+Actor can then use its image-only `add_local_file_to_model_context` tool to view
+that PNG in the next model turn.
+
 Run or resume:
 
 ```bash
