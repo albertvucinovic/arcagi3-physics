@@ -1,5 +1,9 @@
 # Luna ARC-AGI-3 public benchmark
 
+Install the project first as documented in [README.md](README.md). The
+benchmark uses the installed, commit-pinned Eggmono dependency; it does not
+require a local Eggmono checkout or `PYTHONPATH` setup.
+
 Run every locally downloaded public ARC-AGI-3 environment with Luna at maximum
 reasoning effort:
 
@@ -115,3 +119,7 @@ Attach the Egg UI to the shared tree without starting another scheduler:
 cd runs/luna-public-benchmark
 NO_API_CALLS=1 egg.sh
 ```
+
+The optional Egg UI executable is not part of this repository's runtime
+dependency. Install the Egg frontend separately if you want this inspection
+workflow; the benchmark itself and `arcagi3-physics-review` do not require it.

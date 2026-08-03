@@ -2,33 +2,25 @@
 set -euo pipefail
 
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-EGG_MONO=${EGG_MONO:-/home/albert/Private/Projekti/ai/egg/egg-mono}
 PYTHON=${PYTHON:-"$ROOT/venv/bin/python"}
 
 if [[ ! -x "$PYTHON" ]]; then
   echo "Missing ARC Python environment: $PYTHON" >&2
-  echo "Create $ROOT/venv with Python 3.12 and install arc-agi first." >&2
+  echo "Create it with Python 3.12+, then install this project." >&2
   exit 1
 fi
-if [[ ! -d "$EGG_MONO/eggopt" ]]; then
-  echo "Missing egg-mono checkout: $EGG_MONO" >&2
-  echo "Set EGG_MONO=/path/to/egg-mono." >&2
+if ! "$PYTHON" -c 'import arc_agi, eggopt, eggthreads' >/dev/null 2>&1; then
+  echo "Missing ARC Physics dependencies in $PYTHON." >&2
+  echo "Install this project first:" >&2
+  echo "  $PYTHON -m pip install ." >&2
   exit 1
 fi
-if ! "$PYTHON" -c 'import aiohttp' >/dev/null 2>&1; then
-  echo "Missing aiohttp in $PYTHON." >&2
-  echo "Install the runner dependencies with:" >&2
-  echo "  $PYTHON -m pip install 'aiohttp>=3.9'" >&2
-  exit 1
-fi
-if [[ -f "$EGG_MONO/.env" ]]; then
+if [[ -f "$ROOT/.env" ]]; then
   set -a
   # shellcheck disable=SC1090
-  source "$EGG_MONO/.env"
+  source "$ROOT/.env"
   set +a
 fi
-
-export PYTHONPATH="$ROOT:$EGG_MONO/eggopt:$EGG_MONO/eggflow:$EGG_MONO/eggthreads:$EGG_MONO/eggconfig:$EGG_MONO/eggllm${PYTHONPATH:+:$PYTHONPATH}"
 
 cd "$ROOT"
 args=(

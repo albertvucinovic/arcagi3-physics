@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arcagi3-physics"
+version = "0.1.0"
+description = "Git-backed PhysicsStrategy adapter for public ARC-AGI-3 environments"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "arc-agi>=0.9.1,<1",
+  "egg-mono @ git+https://github.com/albertvucinovic/egg-mono.git@bc7ebd3e47ec5900083c9645473888c135056240",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7",
+  "ruff>=0.11",
+]
+
+[project.scripts]
+arcagi3 = "arcagi3_cli:main"
+arcagi3-physics = "arcagi3_physics.run:main"
+arcagi3-physics-benchmark = "arcagi3_physics.benchmark:main"
+arcagi3-physics-review = "arcagi3_physics.review:main"
+
+[tool.setuptools]
+py-modules = ["arcagi3_cli"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["arcagi3_physics*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"

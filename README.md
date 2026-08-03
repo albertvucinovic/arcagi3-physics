@@ -16,6 +16,43 @@ ARC supplies only:
 - trusted ARC win detection;
 - ARC-specific Actor guidance and CLI composition.
 
+## Installation
+
+Prerequisites:
+
+- Python 3.12 or newer (required by the ARC-AGI-3 toolkit);
+- Git (used both by pip for the Eggmono dependency and by PhysicsStrategy);
+- Docker (used for isolated Actor and trusted Critic tool execution).
+
+From a clone of this repository:
+
+```bash
+python3.12 -m venv venv
+venv/bin/python -m pip install --upgrade pip
+venv/bin/python -m pip install .
+```
+
+This installs `arc-agi` and a reproducible, commit-pinned Eggmono release
+directly from
+[`albertvucinovic/egg-mono`](https://github.com/albertvucinovic/egg-mono).
+No sibling Eggmono checkout and no hand-written `PYTHONPATH` are required.
+
+Eggmono's component distributions remain independently installable through
+their existing Git subdirectories (`eggllm`, `eggconfig`, `eggthreads`,
+`eggflow`, and `eggopt`); the root package is an additional convenience, not a
+replacement for that interface.
+
+Configure the provider key used by your selected Actor model, for example in a
+private `.env` file:
+
+```bash
+export OPENAI_API_KEY=...
+```
+
+The launchers source this repository's `.env` when present. Never commit it.
+Downloaded ARC environments are expected under `environment_files/` by
+default and are intentionally ignored by Git.
+
 Runtime topology:
 
 ```text
@@ -44,11 +81,23 @@ Run or resume:
 ./runPhysics.sh
 ```
 
+Equivalent installed entry point:
+
+```bash
+arcagi3-physics --game ls20 \
+  --environments-dir environment_files \
+  --run-dir runs/physics-ls20-seed0
+```
+
 Review the current or completed run from the Critic's authoritative Git copy:
 
 ```bash
 ./reviewPhysics.sh
 ```
+
+The `arcagi3-physics-review` and `arcagi3-physics-benchmark` entry points are
+also installed. See [LUNA-BENCHMARK.md](LUNA-BENCHMARK.md) for the public-suite
+benchmark workflow.
 
 The terminal viewer starts at the latest public observation. Use left/right
 arrows (or `h`/`l`) to traverse the append-only Timeline, Home/End to jump, `r`

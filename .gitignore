@@ -1,3 +1,14 @@
 __pycache__/
 *.py[cod]
 *.swp
+.egg/
+.env
+.physics-evaluation/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+environment_files/
+runs/
+venv/
