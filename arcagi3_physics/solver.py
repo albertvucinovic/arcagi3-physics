@@ -71,8 +71,8 @@ def arc_physics(
     seed: int,
     environments_dir: str | Path,
     actor: Agent,
-    max_depth: int = 8,
-    max_nodes: int = 10_000,
+    default_search_depth: int = 8,
+    default_max_nodes: int = 10_000,
     evaluator_timeout_sec: float = 300.0,
 ) -> PhysicsStrategy:
     """Map ARC environment effects and state semantics onto PhysicsStrategy."""
@@ -98,8 +98,8 @@ def arc_physics(
         domain_information=ARC_DOMAIN_PROMPT,
         domain_files=ARC_DOMAIN_FILES,
         planner_actions=tuple({"action": action} for action in (1, 2, 3, 4, 5, 7)),
-        max_depth=max_depth,
-        max_nodes=max_nodes,
+        default_search_depth=default_search_depth,
+        default_max_nodes=default_max_nodes,
         evaluator_timeout_sec=evaluator_timeout_sec,
     )
 

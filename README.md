@@ -117,7 +117,7 @@ Useful overrides:
 ```bash
 ARC_ACTOR_MODEL='local:your-model' \
 ARC_MAX_ACTIONS=20 \
-ARC_MAX_PLAN_DEPTH=8 \
+ARC_DEFAULT_SEARCH_DEPTH=8 \
 ARC_CRITIC_TIMEOUT=300 \
 ARC_RUN_DIR="$PWD/runs/physics-ls20-local" \
 ./runPhysics.sh

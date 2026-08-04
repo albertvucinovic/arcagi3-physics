@@ -32,8 +32,8 @@ args=(
   --max-actions "${ARC_MAX_ACTIONS:-500}"
   --max-cycles "${ARC_MAX_CYCLES:-100}"
   --actor-context-limit "${ARC_ACTOR_CONTEXT_LIMIT:-3000000}"
-  --max-plan-depth "${ARC_MAX_PLAN_DEPTH:-12}"
-  --max-plan-nodes "${ARC_MAX_PLAN_NODES:-10000}"
+  --default-search-depth "${ARC_DEFAULT_SEARCH_DEPTH:-12}"
+  --default-max-nodes "${ARC_DEFAULT_MAX_NODES:-10000}"
   --critic-timeout "${ARC_CRITIC_TIMEOUT:-300}"
 )
 if [[ $# -gt 0 ]]; then

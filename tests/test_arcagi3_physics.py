@@ -257,7 +257,8 @@ def test_runner_and_prompt_defaults():
     arguments = build_parser().parse_args([])
     assert arguments.game == "ls20"
     assert arguments.actor_model == "Pro: GPT-5.6 Sol max"
-    assert arguments.max_plan_depth == 8
+    assert arguments.default_search_depth == 8
+    assert arguments.default_max_nodes == 10_000
     assert arguments.critic_timeout == 300
     with pytest.raises(SystemExit):
         build_parser().parse_args(["--critic-timeout", "0"])

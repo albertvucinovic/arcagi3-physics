@@ -30,8 +30,8 @@ def run(arguments: argparse.Namespace) -> Path:
         seed=arguments.seed,
         environments_dir=arguments.environments_dir,
         actor=actor,
-        max_depth=arguments.max_plan_depth,
-        max_nodes=arguments.max_plan_nodes,
+        default_search_depth=arguments.default_search_depth,
+        default_max_nodes=arguments.default_max_nodes,
         evaluator_timeout_sec=arguments.critic_timeout,
     )
 
@@ -75,8 +75,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--all-models", type=Path)
     parser.add_argument("--max-actions", type=_positive, default=50)
     parser.add_argument("--max-cycles", type=_positive, default=100)
-    parser.add_argument("--max-plan-depth", type=_positive, default=8)
-    parser.add_argument("--max-plan-nodes", type=_positive, default=10_000)
+    parser.add_argument("--default-search-depth", type=_positive, default=8)
+    parser.add_argument("--default-max-nodes", type=_positive, default=10_000)
     parser.add_argument(
         "--critic-timeout",
         type=_positive,

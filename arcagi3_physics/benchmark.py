@@ -347,8 +347,8 @@ async def _run(arguments: argparse.Namespace) -> tuple[Path, int]:
                     seed=arguments.seed,
                     environments_dir=environments_dir,
                     actor=actor,
-                    max_depth=arguments.max_plan_depth,
-                    max_nodes=arguments.max_plan_nodes,
+                    default_search_depth=arguments.default_search_depth,
+                    default_max_nodes=arguments.default_max_nodes,
                     evaluator_timeout_sec=arguments.critic_timeout,
                 ),
                 game=game,
@@ -510,8 +510,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-parallel", type=_positive, default=3)
     parser.add_argument("--max-actions", type=_positive, default=50)
     parser.add_argument("--max-cycles", type=_positive, default=100)
-    parser.add_argument("--max-plan-depth", type=_positive, default=8)
-    parser.add_argument("--max-plan-nodes", type=_positive, default=10_000)
+    parser.add_argument("--default-search-depth", type=_positive, default=8)
+    parser.add_argument("--default-max-nodes", type=_positive, default=10_000)
     parser.add_argument(
         "--critic-timeout",
         type=_positive,
@@ -921,8 +921,8 @@ def _configuration(
         "max_actions": arguments.max_actions,
         "max_cycles": arguments.max_cycles,
         "actor_context_limit": arguments.actor_context_limit,
-        "max_plan_depth": arguments.max_plan_depth,
-        "max_plan_nodes": arguments.max_plan_nodes,
+        "default_search_depth": arguments.default_search_depth,
+        "default_max_nodes": arguments.default_max_nodes,
     }
 
 
