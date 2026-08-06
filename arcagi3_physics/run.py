@@ -35,6 +35,7 @@ def run(arguments: argparse.Namespace) -> Path:
         default_search_depth=arguments.default_search_depth,
         default_max_nodes=arguments.default_max_nodes,
         evaluator_timeout_sec=arguments.critic_timeout,
+        strategy=arguments.strategy,
     )
 
     print(
@@ -77,6 +78,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--all-models", type=Path)
     parser.add_argument("--max-actions", type=_positive, default=50)
     parser.add_argument("--max-cycles", type=_positive, default=100)
+    parser.add_argument(
+        "--strategy",
+        choices=("latent", "latent-verified", "verified"),
+        default="verified",
+    )
     parser.add_argument("--default-search-depth", type=_positive, default=8)
     parser.add_argument("--default-max-nodes", type=_positive, default=10_000)
     parser.add_argument(
@@ -139,9 +145,12 @@ def _ensure_run_configuration(arguments: argparse.Namespace) -> None:
     path = Path(arguments.run_dir).expanduser().resolve() / "run.json"
     if path.is_file():
         existing = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(existing, dict):
+            existing.setdefault("strategy", "verified")
         stable = {
             "game": arguments.game,
             "seed": arguments.seed,
+            "strategy": arguments.strategy,
             "environments_dir": str(
                 Path(arguments.environments_dir).expanduser().resolve()
             ),
@@ -165,6 +174,7 @@ def _ensure_run_configuration(arguments: argparse.Namespace) -> None:
     value = {
         "game": arguments.game,
         "game_id": metadata["game_id"],
+        "strategy": arguments.strategy,
         "seed": arguments.seed,
         "environments_dir": str(Path(arguments.environments_dir).expanduser().resolve()),
     }

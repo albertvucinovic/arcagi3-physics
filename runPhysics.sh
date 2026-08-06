@@ -25,6 +25,7 @@ fi
 cd "$ROOT"
 environments_dir=${ARC_ENVIRONMENTS_DIR:-$ROOT/environment_files}
 leaderboard=${ARC_LEADERBOARD:-$ROOT/leaderboard-submission/leaderboard.sh}
+physics_strategy=${ARC_PHYSICS_STRATEGY:-verified}
 explicit_game=false
 for argument in "$@"; do
   if [[ $argument == --game || $argument == --game=* ]]; then
@@ -51,10 +52,11 @@ args=(
   --game "$game"
   --seed "${ARC_SEED:-0}"
   --environments-dir "$environments_dir"
-  --run-dir "${ARC_RUN_DIR:-$ROOT/runs/physics-${game}-astar}"
+  --run-dir "${ARC_RUN_DIR:-$ROOT/runs/physics-${game}-${physics_strategy}}"
   --actor-model "${ARC_ACTOR_MODEL:-Pro: GPT-5.6 Sol max}"
   --max-actions "${ARC_MAX_ACTIONS:-1000}"
   --max-cycles "${ARC_MAX_CYCLES:-200}"
+  --strategy "$physics_strategy"
   --actor-context-limit "${ARC_ACTOR_CONTEXT_LIMIT:-0}"
   --default-search-depth "${ARC_DEFAULT_SEARCH_DEPTH:-12}"
   --default-max-nodes "${ARC_DEFAULT_MAX_NODES:-10000}"

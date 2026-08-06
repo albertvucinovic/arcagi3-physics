@@ -164,6 +164,11 @@ ARC_RUN_DIR="$PWD/runs/physics-ls20-local" \
 ./runPhysics.sh
 ```
 
+Select a Physics strategy with `ARC_PHYSICS_STRATEGY=latent`,
+`latent-verified`, or `verified` (the default). The default run directory includes
+the strategy name, so incompatible repository contracts cannot be resumed into
+one another.
+
 `ARC_CRITIC_TIMEOUT` bounds each trusted Critic evaluator subprocess. If Actor
 `world_model.py` hangs or plans for too long, Eggthreads terminates that isolated
 tool call and the Critic returns revision feedback instead of blocking the run.

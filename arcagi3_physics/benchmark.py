@@ -172,7 +172,11 @@ class _RunEnvironment(Task):
         started = monotonic()
         run_dir = Path(self.run_dir)
         _ensure_environment_run_configuration(
-            run_dir, self.game, self.seed, self.environments_dir
+            run_dir,
+            self.game,
+            self.seed,
+            self.environments_dir,
+            self.strategy.mode.name,
         )
         completed = run_dir / "result.json"
         if completed.is_file():
@@ -356,6 +360,7 @@ async def _run(arguments: argparse.Namespace) -> tuple[Path, int]:
                     default_search_depth=arguments.default_search_depth,
                     default_max_nodes=arguments.default_max_nodes,
                     evaluator_timeout_sec=arguments.critic_timeout,
+                    strategy=arguments.strategy,
                 ),
                 game=game,
                 seed=arguments.seed,
@@ -518,6 +523,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-parallel", type=_positive, default=3)
     parser.add_argument("--max-actions", type=_positive, default=50)
     parser.add_argument("--max-cycles", type=_positive, default=100)
+    parser.add_argument(
+        "--strategy",
+        choices=("latent", "latent-verified", "verified"),
+        default="verified",
+    )
     parser.add_argument("--default-search-depth", type=_positive, default=8)
     parser.add_argument("--default-max-nodes", type=_positive, default=10_000)
     parser.add_argument(
@@ -907,6 +917,8 @@ def _ensure_configuration(path: Path, value: dict[str, Any]) -> None:
     if path.is_file():
         existing = _read_json(path)
         canonical = json.loads(json.dumps(value))
+        if "strategy" in canonical and "strategy" not in existing:
+            existing["strategy"] = "verified"
         if existing != canonical:
             raise ValueError(
                 f"benchmark configuration changed for existing run: {path}; "
@@ -917,7 +929,11 @@ def _ensure_configuration(path: Path, value: dict[str, Any]) -> None:
 
 
 def _ensure_environment_run_configuration(
-    run_dir: Path, game: str, seed: int, environments_dir: str | Path
+    run_dir: Path,
+    game: str,
+    seed: int,
+    environments_dir: str | Path,
+    strategy: str,
 ) -> None:
     path = run_dir / "run.json"
     if not path.is_file() and (run_dir / "workspace" / "critic-repository" / ".git").is_dir():
@@ -931,6 +947,7 @@ def _ensure_environment_run_configuration(
         "game": game,
         "game_id": metadata["game_id"],
         "seed": seed,
+        "strategy": strategy,
         "environments_dir": str(Path(environments_dir).expanduser().resolve()),
     }
     _ensure_configuration(path, value)
@@ -948,6 +965,7 @@ def _configuration(
         "environments_dir": str(environments_dir),
         "max_actions": arguments.max_actions,
         "max_cycles": arguments.max_cycles,
+        "strategy": arguments.strategy,
         "actor_context_limit": arguments.actor_context_limit,
         "default_search_depth": arguments.default_search_depth,
         "default_max_nodes": arguments.default_max_nodes,

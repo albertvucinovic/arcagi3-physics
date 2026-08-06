@@ -29,6 +29,9 @@ arcagi3-physics-review = "arcagi3_physics.review:main"
 [tool.setuptools]
 py-modules = ["arcagi3_cli"]
 
+[tool.setuptools.package-data]
+arcagi3_physics = ["systemprompt.md"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["arcagi3_physics*"]

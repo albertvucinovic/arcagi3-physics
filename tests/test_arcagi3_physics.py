@@ -250,6 +250,7 @@ def test_arc_composition_is_thin_and_requires_actor_tools(tmp_path):
     )
     assert configured.allowed_tools == ARC_ACTOR_TOOLS
     assert strategy.domain_information == ARC_DOMAIN_PROMPT
+    assert strategy.mode.name == "verified"
     assert strategy.domain_files == ARC_DOMAIN_FILES
     assert {"action": 1} in strategy.planner_actions
     assert strategy.validate_action is validate_action
@@ -264,6 +265,7 @@ def test_runner_and_prompt_defaults():
     assert arguments.default_search_depth == 8
     assert arguments.default_max_nodes == 10_000
     assert arguments.critic_timeout == 300
+    assert arguments.strategy == "verified"
     with pytest.raises(SystemExit):
         build_parser().parse_args(["--critic-timeout", "0"])
     with pytest.raises(SystemExit):
@@ -289,6 +291,9 @@ def test_runner_and_prompt_defaults():
     assert "Action 6 is a mouse" in ARC_DOMAIN_PROMPT
     assert '{"action": 1}' in ARC_DOMAIN_PROMPT
     assert '"data": {"x": X, "y": Y}' in ARC_DOMAIN_PROMPT
+    assert ARC_DOMAIN_PROMPT == (
+        Path("arcagi3_physics/systemprompt.md").read_text().strip()
+    )
     assert "actions_<suffix>" not in ARC_DOMAIN_PROMPT
     assert "actions_<suffix>" not in prompt
     assert "committed-plan" not in prompt
@@ -1176,6 +1181,7 @@ def test_single_run_persists_exact_local_environment_version(tmp_path):
             run_dir=run_dir,
             game="ls20",
             seed=7,
+            strategy="verified",
             environments_dir=environments,
         )
     )
@@ -1185,7 +1191,38 @@ def test_single_run_persists_exact_local_environment_version(tmp_path):
         "game": "ls20",
         "game_id": "ls20-version",
         "seed": 7,
+        "strategy": "verified",
     }
+
+
+def test_legacy_verified_run_configuration_remains_resumable(tmp_path):
+    import json
+    from argparse import Namespace
+
+    from arcagi3_physics.run import _ensure_run_configuration
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "environments_dir": str((tmp_path / "environments").resolve()),
+                "game": "ls20-current",
+                "game_id": "ls20-current",
+                "seed": 0,
+            }
+        )
+    )
+
+    _ensure_run_configuration(
+        Namespace(
+            run_dir=run_dir,
+            game="ls20-current",
+            seed=0,
+            strategy="verified",
+            environments_dir=tmp_path / "environments",
+        )
+    )
 
 
 def test_environment_metadata_selects_newest_or_explicit_version(tmp_path):
@@ -1229,6 +1266,7 @@ def test_legacy_run_without_recorded_version_cannot_resume_after_sync(tmp_path):
                 run_dir=run_dir,
                 game="ls20",
                 seed=0,
+                strategy="verified",
                 environments_dir=tmp_path / "environments",
             )
         )

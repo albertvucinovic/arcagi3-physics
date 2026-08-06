@@ -47,7 +47,7 @@ def test_launcher_uses_resolved_api_version_for_game_and_run_dir(tmp_path):
     assert any("submission:" in call and "current-game ls20" in call for call in calls)
     solver = next(call for call in calls if "-m arcagi3_physics.run" in call)
     assert "--game ls20-current" in solver
-    assert "--run-dir " + str(ROOT / "runs/physics-ls20-current-astar") in solver
+    assert "--run-dir " + str(ROOT / "runs/physics-ls20-current-verified") in solver
 
 
 def test_launcher_arc_game_override_skips_api_resolution(tmp_path):
@@ -79,7 +79,7 @@ def test_launcher_arc_game_override_skips_api_resolution(tmp_path):
     assert not any("submission:" in call for call in calls)
     solver = next(call for call in calls if "-m arcagi3_physics.run" in call)
     assert "--game ls20-old" in solver
-    assert "--run-dir " + str(ROOT / "runs/physics-ls20-old-astar") in solver
+    assert "--run-dir " + str(ROOT / "runs/physics-ls20-old-verified") in solver
 
 
 def test_launcher_command_line_game_takes_precedence(tmp_path):
