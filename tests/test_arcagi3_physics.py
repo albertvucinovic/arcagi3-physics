@@ -57,6 +57,10 @@ class FakeEnv:
         self.position = 0
         return FakeFrame(0)
 
+    @property
+    def observation_space(self):
+        return FakeFrame(self.position)
+
     def step(self, _action, data=None):
         self.steps += 1
         self.position += 1
@@ -125,7 +129,7 @@ def test_offline_session_reuses_live_env_and_replays_only_after_loss(monkeypatch
     second = Execute("fake", 0, ".", (initial, t1), {"action": 1}).run()
 
     assert len(environments) == 1
-    assert environments[0].resets == 1
+    assert environments[0].resets == 0
     assert environments[0].steps == 2
 
     clear_live_sessions()
@@ -133,7 +137,7 @@ def test_offline_session_reuses_live_env_and_replays_only_after_loss(monkeypatch
     persisted = tuple(json.loads(json.dumps([initial, t1, t2])))
     third = Execute("fake", 0, ".", persisted, {"action": 1}).run()
     assert len(environments) == 2
-    assert environments[1].resets == 1
+    assert environments[1].resets == 0
     assert environments[1].steps == 3
     assert third["grid"] == [[[3]]]
 
@@ -1146,3 +1150,85 @@ def test_grid_to_png_accepts_initial_only_canonical_timeline(tmp_path):
 
     assert completed.returncode == 0, completed.stderr
     assert output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_single_run_persists_exact_local_environment_version(tmp_path):
+    import json
+    from argparse import Namespace
+
+    from arcagi3_physics.run import _ensure_run_configuration
+
+    environments = tmp_path / "environments"
+    metadata = environments / "ls20" / "version" / "metadata.json"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text(
+        json.dumps(
+            {
+                "game_id": "ls20-version",
+                "baseline_actions": [1],
+                "date_downloaded": "2026-01-01T00:00:00Z",
+            }
+        )
+    )
+    run_dir = tmp_path / "run"
+    _ensure_run_configuration(
+        Namespace(
+            run_dir=run_dir,
+            game="ls20",
+            seed=7,
+            environments_dir=environments,
+        )
+    )
+
+    assert json.loads((run_dir / "run.json").read_text()) == {
+        "environments_dir": str(environments.resolve()),
+        "game": "ls20",
+        "game_id": "ls20-version",
+        "seed": 7,
+    }
+
+
+def test_environment_metadata_selects_newest_or_explicit_version(tmp_path):
+    import json
+
+    from arcagi3_physics.environment import environment_metadata
+
+    for version, downloaded in (
+        ("old", "2026-01-01T00:00:00Z"),
+        ("current", "2026-08-01T00:00:00Z"),
+    ):
+        path = tmp_path / "ls20" / version / "metadata.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "game_id": f"ls20-{version}",
+                    "date_downloaded": downloaded,
+                }
+            )
+        )
+
+    _, current = environment_metadata("ls20", tmp_path)
+    _, old = environment_metadata("ls20-old", tmp_path)
+
+    assert current["game_id"] == "ls20-current"
+    assert old["game_id"] == "ls20-old"
+
+
+def test_legacy_run_without_recorded_version_cannot_resume_after_sync(tmp_path):
+    from argparse import Namespace
+
+    from arcagi3_physics.run import _ensure_run_configuration
+
+    run_dir = tmp_path / "legacy"
+    (run_dir / "workspace" / "critic-repository" / ".git").mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="legacy ARC run.*new run directory"):
+        _ensure_run_configuration(
+            Namespace(
+                run_dir=run_dir,
+                game="ls20",
+                seed=0,
+                environments_dir=tmp_path / "environments",
+            )
+        )

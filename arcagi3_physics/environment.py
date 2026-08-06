@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,44 @@ from eggflow import Task
 
 _SESSIONS: dict[tuple[str, int, str], Any] = {}
 _SESSIONS_LOCK = threading.Lock()
+
+
+def environment_metadata(
+    game: str, environments_dir: str | Path
+) -> tuple[Path, dict[str, Any]]:
+    """Resolve the exact local version the offline Arcade will open."""
+
+    root = Path(environments_dir).expanduser().resolve()
+    base, separator, _ = game.partition("-")
+    candidates = sorted((root / base).glob("*/metadata.json"))
+    values = []
+    for path in candidates:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise TypeError(f"ARC metadata must be an object: {path}")
+        game_id = value.get("game_id")
+        if not isinstance(game_id, str) or game_id.split("-", 1)[0] != base:
+            raise ValueError(f"ARC metadata game_id does not match {base!r}: {path}")
+        if not separator or game_id == game:
+            values.append((path, value))
+    if not values:
+        raise FileNotFoundError(f"ARC environment is unavailable: {game}")
+    if separator:
+        if len(values) != 1:
+            raise ValueError(f"multiple local copies found for ARC environment {game}")
+        return values[0]
+
+    dated = [item for item in values if item[1].get("date_downloaded")]
+    if len(values) > 1 and not dated:
+        raise ValueError(
+            f"multiple ARC environment versions found for {game!r}; use a "
+            "versioned game ID"
+        )
+
+    def downloaded(item: tuple[Path, dict[str, Any]]) -> str:
+        return str(item[1].get("date_downloaded") or "")
+
+    return max(dated or values, key=downloaded)
 
 
 def observation(frame: Any) -> dict[str, Any]:
@@ -40,12 +79,14 @@ class Initialize(Task):
             env = _SESSIONS.get(key)
             if env is None:
                 env = _environment(*key)
-                initial = observation(env.reset())
+                initial = observation(env.observation_space)
                 _SESSIONS[key] = env
             else:
                 last = getattr(env, "last_response", None)
                 initial = (
-                    observation(last) if last is not None else observation(env.reset())
+                    observation(last)
+                    if last is not None
+                    else observation(env.observation_space)
                 )
         return initial
 
@@ -81,7 +122,7 @@ def clear_live_sessions() -> None:
 
 def _recover(key, timeline):
     env = _environment(*key)
-    current = observation(env.reset())
+    current = observation(env.observation_space)
     if current != timeline[0]:
         raise RuntimeError(
             "ARC reset does not reproduce the recorded initial observation"

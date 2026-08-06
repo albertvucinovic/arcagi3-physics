@@ -9,10 +9,12 @@ from tempfile import NamedTemporaryFile
 from eggopt import Agent, physics_actor_system_prompt
 from eggthreads import create_llm_client
 
+from .environment import environment_metadata
 from .solver import ARC_ACTOR_TOOLS, ARC_DOMAIN_PROMPT, arc_physics
 
 
 def run(arguments: argparse.Namespace) -> Path:
+    _ensure_run_configuration(arguments)
     models, all_models = _model_paths(arguments.models, arguments.all_models)
     llm = create_llm_client(models_path=models, all_models_path=all_models)
     actor = Agent(
@@ -131,6 +133,42 @@ def _write_json(path: Path, value: object) -> None:
         temporary.write("\n")
         temporary_path = Path(temporary.name)
     temporary_path.replace(path)
+
+
+def _ensure_run_configuration(arguments: argparse.Namespace) -> None:
+    path = Path(arguments.run_dir).expanduser().resolve() / "run.json"
+    if path.is_file():
+        existing = json.loads(path.read_text(encoding="utf-8"))
+        stable = {
+            "game": arguments.game,
+            "seed": arguments.seed,
+            "environments_dir": str(
+                Path(arguments.environments_dir).expanduser().resolve()
+            ),
+        }
+        if not isinstance(existing, dict) or any(
+            existing.get(key) != value for key, value in stable.items()
+        ):
+            raise ValueError(
+                f"ARC run configuration changed for existing run: {path}; "
+                "use a new run directory"
+            )
+        return
+    legacy_repository = path.parent / "workspace" / "critic-repository" / ".git"
+    if legacy_repository.is_dir():
+        raise ValueError(
+            f"legacy ARC run has no recorded environment game_id: {path.parent}; "
+            "do not resume it after environment synchronization—use a new run "
+            "directory and an exact versioned --game"
+        )
+    _, metadata = environment_metadata(arguments.game, arguments.environments_dir)
+    value = {
+        "game": arguments.game,
+        "game_id": metadata["game_id"],
+        "seed": arguments.seed,
+        "environments_dir": str(Path(arguments.environments_dir).expanduser().resolve()),
+    }
+    _write_json(path, value)
 
 
 if __name__ == "__main__":

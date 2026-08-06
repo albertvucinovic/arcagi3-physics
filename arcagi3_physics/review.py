@@ -335,13 +335,41 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Print one frame and exit instead of opening the arrow-key viewer.",
     )
+    parser.add_argument(
+        "--gif",
+        type=Path,
+        help="Export the authoritative Timeline to an animated GIF and exit.",
+    )
+    parser.add_argument("--gif-scale", type=_positive, default=8)
+    parser.add_argument("--gif-duration-ms", type=_positive, default=200)
+    parser.add_argument("--gif-level-pause-ms", type=_positive, default=800)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     try:
-        if arguments.frame is None:
+        selected = sum(
+            (
+                arguments.frame is not None,
+                arguments.gif is not None,
+            )
+        )
+        if selected > 1:
+            raise ValueError("--frame and --gif are mutually exclusive")
+        if arguments.gif is not None:
+            from .gif import export_gif
+
+            state = load_review(arguments.run_dir)
+            destination = export_gif(
+                state,
+                arguments.gif,
+                scale=arguments.gif_scale,
+                duration_ms=arguments.gif_duration_ms,
+                level_pause_ms=arguments.gif_level_pause_ms,
+            )
+            print(f"GIF: {destination}")
+        elif arguments.frame is None:
             review(arguments.run_dir)
         else:
             state = load_review(arguments.run_dir)
@@ -350,6 +378,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Review unavailable: {exc}", file=sys.stderr)
         return 1
     return 0
+
+
+def _positive(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be positive")
+    return parsed
 
 
 def _thread_turns(path: Path, *, run_dir: Path | None = None) -> tuple[int, int]:
@@ -680,7 +715,7 @@ def _is_actor_critic_turn(payload: Mapping[str, Any]) -> bool:
 
 def _timestamp(value: str) -> float | None:
     try:
-        return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        return dt.datetime.fromisoformat(value).timestamp()
     except (AttributeError, TypeError, ValueError):
         return None
 

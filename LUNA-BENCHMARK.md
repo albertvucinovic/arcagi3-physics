@@ -11,6 +11,12 @@ reasoning effort:
 ./runLunaBenchmark.sh
 ```
 
+Before starting a benchmark intended for a hosted scorecard, synchronize exact
+current API versions and follow the separate submission workflow in
+[leaderboard-submission/README.md](leaderboard-submission/README.md). The
+benchmark's 25 local base-game check is not a substitute for current versioned
+API discovery.
+
 The default command verifies that all 25 public environments are present before
 starting. `--games` explicitly opts into a partial diagnostic/recovery invocation.
 

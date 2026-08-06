@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arcagi3-leaderboard-submission"
+version = "0.1.0"
+description = "ARC-AGI-3 local RHAE and hosted scorecard submission tools"
+requires-python = ">=3.12"
+dependencies = [
+  "arc-agi>=0.9.1,<1",
+  "arcagi3-physics==0.1.0",
+]
+
+[project.scripts]
+arcagi3-leaderboard = "leaderboard_submission.workflow:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["leaderboard_submission*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -34,6 +34,7 @@ from eggthreads import (
     validate_model_handle,
 )
 
+from .environment import environment_metadata
 from .run import _limit, _model_paths, _write_json
 from .solver import ARC_ACTOR_TOOLS, ARC_DOMAIN_PROMPT, arc_physics
 
@@ -145,6 +146,8 @@ class _RunEnvironment(Task):
 
     strategy: Any = field(repr=False, compare=False)
     game: str
+    seed: int
+    environments_dir: str
     run_dir: str
     runtime_key: str
     physics_thread_id: str
@@ -168,6 +171,9 @@ class _RunEnvironment(Task):
     def run(self):
         started = monotonic()
         run_dir = Path(self.run_dir)
+        _ensure_environment_run_configuration(
+            run_dir, self.game, self.seed, self.environments_dir
+        )
         completed = run_dir / "result.json"
         if completed.is_file():
             try:
@@ -352,6 +358,8 @@ async def _run(arguments: argparse.Namespace) -> tuple[Path, int]:
                     evaluator_timeout_sec=arguments.critic_timeout,
                 ),
                 game=game,
+                seed=arguments.seed,
+                environments_dir=str(environments_dir),
                 run_dir=str(run_dir / f"Physics {game}"),
                 runtime_key=runtime.runtime_key,
                 physics_thread_id=physics_id,
@@ -906,6 +914,26 @@ def _ensure_configuration(path: Path, value: dict[str, Any]) -> None:
             )
         return
     _write_json(path, value)
+
+
+def _ensure_environment_run_configuration(
+    run_dir: Path, game: str, seed: int, environments_dir: str | Path
+) -> None:
+    path = run_dir / "run.json"
+    if not path.is_file() and (run_dir / "workspace" / "critic-repository" / ".git").is_dir():
+        raise ValueError(
+            f"legacy ARC benchmark run has no recorded environment game_id: "
+            f"{run_dir}; do not resume it after environment synchronization—use "
+            "a new benchmark run directory"
+        )
+    _, metadata = environment_metadata(game, environments_dir)
+    value = {
+        "game": game,
+        "game_id": metadata["game_id"],
+        "seed": seed,
+        "environments_dir": str(Path(environments_dir).expanduser().resolve()),
+    }
+    _ensure_configuration(path, value)
 
 
 def _configuration(

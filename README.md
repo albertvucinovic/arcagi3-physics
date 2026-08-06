@@ -112,6 +112,30 @@ of that action. For logs or non-interactive inspection, print one frame with:
 ./reviewPhysics.sh --frame 0
 ```
 
+Scoring and scorecard submission are intentionally separate from the solver.
+All local RHAE reporting, official environment synchronization, Competition
+Mode trajectory gathering/replay, exact current environment lists, and the
+complete Community Leaderboard procedure live in:
+
+```text
+leaderboard-submission/
+```
+
+Start with [leaderboard-submission/README.md](leaderboard-submission/README.md).
+In particular, completed independent `runPhysics.sh` runs can be listed together
+for one scorecard, provided they cover every exact version currently advertised
+by the API. The submission tooling preflights coverage without opening the
+one-shot scorecard. None of this code or score data is exposed to the Actor.
+
+Animated GIF export remains a normal review feature:
+
+```bash
+./reviewPhysics.sh --gif runs/physics-ls20-seed0/played.gif
+```
+
+Use `--gif-scale`, `--gif-duration-ms`, and `--gif-level-pause-ms` to control
+nearest-neighbor size and timing.
+
 Useful overrides:
 
 ```bash
