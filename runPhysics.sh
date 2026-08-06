@@ -25,7 +25,7 @@ fi
 cd "$ROOT"
 environments_dir=${ARC_ENVIRONMENTS_DIR:-$ROOT/environment_files}
 leaderboard=${ARC_LEADERBOARD:-$ROOT/leaderboard-submission/leaderboard.sh}
-physics_strategy=${ARC_PHYSICS_STRATEGY:-verified}
+physics_strategy=${ARC_PHYSICS_STRATEGY:-latent-verified}
 explicit_game=false
 for argument in "$@"; do
   if [[ $argument == --game || $argument == --game=* ]]; then
