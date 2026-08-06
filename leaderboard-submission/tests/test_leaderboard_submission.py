@@ -377,6 +377,35 @@ def test_official_game_ids_require_one_exact_version_per_base_game():
     assert official_games(Arcade()) == ("ls20", "re86")
 
 
+def test_current_game_resolves_api_version_and_requires_matching_local_metadata(
+    tmp_path,
+):
+    from types import SimpleNamespace
+
+    from leaderboard_submission.workflow import resolve_current_game
+
+    class Arcade:
+        def get_environments(self):
+            return [SimpleNamespace(game_id="ls20-current")]
+
+    def factory(**_):
+        return Arcade()
+
+    with pytest.raises(FileNotFoundError, match="ls20-current"):
+        resolve_current_game("ls20", tmp_path, arcade_factory=factory)
+
+    metadata = tmp_path / "ls20" / "current" / "metadata.json"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text('{"game_id": "wrong-version"}')
+    with pytest.raises(ValueError, match="metadata does not match"):
+        resolve_current_game("ls20", tmp_path, arcade_factory=factory)
+
+    metadata.write_text('{"game_id": "ls20-current"}')
+    assert (
+        resolve_current_game("ls20", tmp_path, arcade_factory=factory) == "ls20-current"
+    )
+
+
 def test_scorecard_preflight_requires_exact_complete_current_suite(tmp_path):
     from leaderboard_submission.workflow import Trajectory, validate_trajectory_set
 

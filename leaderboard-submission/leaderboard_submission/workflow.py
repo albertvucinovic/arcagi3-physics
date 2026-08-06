@@ -135,6 +135,54 @@ def official_games(arcade: Any) -> tuple[str, ...]:
     return bases
 
 
+def resolve_current_game(
+    game: str,
+    environments_dir: str | Path,
+    *,
+    api_key: str = "",
+    base_url: str = OFFICIAL_BASE_URL,
+    arcade_factory=create_online_arcade,
+) -> str:
+    """Resolve one base game to its sole current API version installed locally."""
+
+    if "-" in game:
+        raise ValueError(
+            "current-game resolution requires an unversioned base ID; set "
+            "ARC_GAME to play an explicit version"
+        )
+    matches = tuple(
+        game_id
+        for game_id in official_game_ids(
+            arcade_factory(api_key=api_key, base_url=base_url)
+        )
+        if game_id.split("-", 1)[0] == game
+    )
+    if not matches:
+        raise RuntimeError(f"official ARC API does not advertise base game {game!r}")
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"official ARC API advertises multiple versions for {game!r}: "
+            + ", ".join(matches)
+        )
+    game_id = matches[0]
+    base, version = game_id.split("-", 1)
+    metadata = (
+        Path(environments_dir).expanduser().resolve() / base / version / "metadata.json"
+    )
+    if not metadata.is_file():
+        raise FileNotFoundError(
+            f"current official ARC environment is not installed: {game_id}; run "
+            "./leaderboard-submission/leaderboard.sh environments "
+            "--environments-dir environment_files --sync"
+        )
+    value = json.loads(metadata.read_text(encoding="utf-8"))
+    if not isinstance(value, dict) or value.get("game_id") != game_id:
+        raise ValueError(
+            f"local ARC metadata does not match the current API version: {metadata}"
+        )
+    return game_id
+
+
 def close_official_scorecard(
     arcade: Any,
     scorecard_id: str,
@@ -616,6 +664,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Download missing current versions; retain old versions.",
     )
 
+    current_game = subparsers.add_parser(
+        "current-game",
+        help="Resolve one base game to the exact current API version installed locally.",
+    )
+    current_game.add_argument("game")
+    current_game.add_argument(
+        "--environments-dir", type=Path, default=Path("environment_files")
+    )
+
     score = subparsers.add_parser(
         "score",
         help="Compute local official-toolkit RHAE reports from run directories.",
@@ -683,6 +740,16 @@ def main(argv: list[str] | None = None) -> int:
                 base_url=arguments.base_url,
                 dry_run=not arguments.sync,
             )
+        elif arguments.command == "current-game":
+            print(
+                resolve_current_game(
+                    arguments.game,
+                    arguments.environments_dir,
+                    api_key=arguments.api_key,
+                    base_url=arguments.base_url,
+                )
+            )
+            return 0
         elif arguments.command == "score":
             value = score_run_directories(
                 arguments.run_dir,

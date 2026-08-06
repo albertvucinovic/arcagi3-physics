@@ -84,7 +84,9 @@ Run or resume:
 With no `ARC_GAME` override, the launcher asks the official API for the current
 `ls20` version, verifies that exact version exists in `environment_files`, and
 uses a versioned run directory. It fails before starting an expensive run if the
-API and local files do not match. Synchronize first when instructed:
+API and local files do not match. API discovery remains isolated in the
+`leaderboard-submission` package; the Physics solver receives only the resolved
+exact local game ID. Synchronize first when instructed:
 
 ```bash
 ./leaderboard-submission/leaderboard.sh environments \

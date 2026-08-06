@@ -24,6 +24,7 @@ fi
 
 cd "$ROOT"
 environments_dir=${ARC_ENVIRONMENTS_DIR:-$ROOT/environment_files}
+leaderboard=${ARC_LEADERBOARD:-$ROOT/leaderboard-submission/leaderboard.sh}
 explicit_game=false
 for argument in "$@"; do
   if [[ $argument == --game || $argument == --game=* ]]; then
@@ -37,10 +38,11 @@ elif [[ $explicit_game == true ]]; then
   game=ls20
 else
   game=$(
-    "$PYTHON" -m arcagi3_physics.launch ls20 \
-      --environments-dir "$environments_dir" \
+    "$leaderboard" \
       --api-key "${ARC_API_KEY:-}" \
-      --base-url "${ARC_BASE_URL:-https://three.arcprize.org}"
+      --base-url "${ARC_BASE_URL:-https://three.arcprize.org}" \
+      current-game ls20 \
+      --environments-dir "$environments_dir"
   )
   echo "ARC API current game: $game"
 fi
