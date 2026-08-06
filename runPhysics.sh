@@ -23,12 +23,33 @@ if [[ -f "$ROOT/.env" ]]; then
 fi
 
 cd "$ROOT"
+environments_dir=${ARC_ENVIRONMENTS_DIR:-$ROOT/environment_files}
+explicit_game=false
+for argument in "$@"; do
+  if [[ $argument == --game || $argument == --game=* ]]; then
+    explicit_game=true
+    break
+  fi
+done
+if [[ -n ${ARC_GAME:-} ]]; then
+  game=$ARC_GAME
+elif [[ $explicit_game == true ]]; then
+  game=ls20
+else
+  game=$(
+    "$PYTHON" -m arcagi3_physics.launch ls20 \
+      --environments-dir "$environments_dir" \
+      --api-key "${ARC_API_KEY:-}" \
+      --base-url "${ARC_BASE_URL:-https://three.arcprize.org}"
+  )
+  echo "ARC API current game: $game"
+fi
 args=(
   -m arcagi3_physics.run
-  --game "${ARC_GAME:-ls20}"
+  --game "$game"
   --seed "${ARC_SEED:-0}"
-  --environments-dir "${ARC_ENVIRONMENTS_DIR:-$ROOT/environment_files}"
-  --run-dir "${ARC_RUN_DIR:-$ROOT/runs/physics-ls20-astar}"
+  --environments-dir "$environments_dir"
+  --run-dir "${ARC_RUN_DIR:-$ROOT/runs/physics-${game}-astar}"
   --actor-model "${ARC_ACTOR_MODEL:-Pro: GPT-5.6 Sol max}"
   --max-actions "${ARC_MAX_ACTIONS:-1000}"
   --max-cycles "${ARC_MAX_CYCLES:-100}"

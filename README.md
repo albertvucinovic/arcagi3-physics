@@ -81,6 +81,21 @@ Run or resume:
 ./runPhysics.sh
 ```
 
+With no `ARC_GAME` override, the launcher asks the official API for the current
+`ls20` version, verifies that exact version exists in `environment_files`, and
+uses a versioned run directory. It fails before starting an expensive run if the
+API and local files do not match. Synchronize first when instructed:
+
+```bash
+./leaderboard-submission/leaderboard.sh environments \
+  --environments-dir environment_files --sync
+```
+
+Only set `ARC_GAME` (or pass `--game`) when intentionally selecting another
+base game or an older exact version, for example
+`ARC_GAME=ls20-9607627b ./runPhysics.sh`. Either explicit override deliberately
+skips API-current-version selection.
+
 Equivalent installed entry point:
 
 ```bash
