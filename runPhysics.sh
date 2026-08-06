@@ -54,7 +54,7 @@ args=(
   --run-dir "${ARC_RUN_DIR:-$ROOT/runs/physics-${game}-astar}"
   --actor-model "${ARC_ACTOR_MODEL:-Pro: GPT-5.6 Sol max}"
   --max-actions "${ARC_MAX_ACTIONS:-1000}"
-  --max-cycles "${ARC_MAX_CYCLES:-100}"
+  --max-cycles "${ARC_MAX_CYCLES:-200}"
   --actor-context-limit "${ARC_ACTOR_CONTEXT_LIMIT:-0}"
   --default-search-depth "${ARC_DEFAULT_SEARCH_DEPTH:-12}"
   --default-max-nodes "${ARC_DEFAULT_MAX_NODES:-10000}"
